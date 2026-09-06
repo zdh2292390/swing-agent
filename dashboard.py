@@ -2095,16 +2095,110 @@ with tab_verify:
                 cnt = mx_ok.pivot(index="标的", columns="策略", values="信号数").reindex(columns=piv.columns)
                 piv = piv.loc[piv.mean(axis=1).sort_values(ascending=False).index]
                 cnt = cnt.reindex(index=piv.index, columns=piv.columns)  # 行序跟着胜率矩阵走，否则样本数会错位
-                text = [[("" if (pd.isna(piv.iloc[i, j]) or pd.isna(cnt.iloc[i, j])) else f"{piv.iloc[i, j]:.0f} ({int(cnt.iloc[i, j])})")
-                         for j in range(piv.shape[1])] for i in range(piv.shape[0])]
                 zmid = {"胜率%": 50, "基准胜率%": 50}.get(metric, 0)
-                fig_m = go.Figure(go.Heatmap(z=piv.values, x=list(piv.columns), y=list(piv.index), colorscale="RdYlGn", zmid=zmid, text=text, texttemplate="%{text}",
-                                             textfont=dict(size=10), xgap=2, ygap=2,
-                                             hovertemplate="%{y} · %{x}<br>" + metric + " %{z:.1f}<extra></extra>", colorbar=dict(title=metric)))
-                fig_m.update_layout(template=TEMPLATE, height=max(340, 30 * len(piv) + 100), margin=dict(l=40, r=20, t=30, b=40), yaxis_autorange="reversed",
-                                    xaxis=dict(side="top"))
-                st.caption(f"格子 = {metric}（括号里是信号数）；行按各策略平均值从高到低排。")
-                st.plotly_chart(fig_m, width="stretch", config=PLOTLY_CONFIG)
+                # 用 st.dataframe 的单格选择：点格子 → rerun，原生高亮，不用 plotly 的点击事件（那个在 Streamlit 里会慢一步）
+                from plotly.colors import sample_colorscale
+
+                rows_l, cols_l = list(piv.index), list(piv.columns)
+                vals_all = piv.values[~np.isnan(piv.values)]
+                if metric in ("胜率%", "基准胜率%"):
+                    lo_v, hi_v = 0.0, 100.0
+                else:
+                    span = float(np.nanmax(np.abs(vals_all))) if len(vals_all) else 1.0
+                    lo_v, hi_v = -span, span
+                txt = pd.DataFrame("", index=rows_l, columns=cols_l)
+                css = pd.DataFrame("", index=rows_l, columns=cols_l)
+                for sym_i in rows_l:
+                    for lab_j in cols_l:
+                        v_, n_ = piv.loc[sym_i, lab_j], cnt.loc[sym_i, lab_j]
+                        if pd.isna(v_) or pd.isna(n_):
+                            css.loc[sym_i, lab_j] = "background-color:rgba(0,0,0,0.03);color:#9ca3af"
+                            continue
+                        t_ = 0.0 if hi_v == lo_v else min(max((float(v_) - lo_v) / (hi_v - lo_v), 0.0), 1.0)
+                        color = sample_colorscale("RdYlGn", [t_])[0]
+                        txt.loc[sym_i, lab_j] = f"{v_:.0f} ({int(n_)})"
+                        css.loc[sym_i, lab_j] = f"background-color:{color};color:#111827;text-align:center"
+                txt.index.name = "标的"
+                ev_m = st.dataframe(txt.style.apply(lambda _df: css, axis=None), width="stretch", height=min(40 + 35 * len(rows_l), 900),
+                                    on_select="rerun", selection_mode="single-cell", key="mx_heat",
+                                    column_config={c: st.column_config.TextColumn(c, width="small") for c in cols_l})
+                st.caption(f"每格 = {metric}（括号里是信号数）。点任意格子，下面自动显示那个标的 × 策略的行情图和信号明细。")
+
+                # ---- 点击格子：行情图 + 该格子的信号明细 ----
+                click_cell = None
+                try:
+                    cells_sel = list(ev_m.selection.cells) if ev_m is not None else []
+                    if cells_sel:
+                        r_pos, c_name = cells_sel[0]
+                        c_sym, c_lab = rows_l[int(r_pos)], str(c_name)
+                        c_key = next((k for k, v in STRAT_LABEL.items() if v == c_lab), None)
+                        if c_key and c_sym in syms_v and txt.loc[c_sym, c_lab] != "":
+                            click_cell = (c_sym, c_key)
+                except Exception:
+                    click_cell = None
+                # 保底：也可以用“查看格子”两个下拉框手动选
+                cc1, cc2, cc3 = st.columns([1, 1, 2])
+                pick_cell_sym = cc1.selectbox("查看格子 · 标的", sorted(mx_ok["标的"].unique()), key="mx_cell_sym")
+                pick_cell_strat = cc2.selectbox("查看格子 · 策略", SWING_NAMES, format_func=lambda n: STRAT_LABEL[n], key="mx_cell_strat")
+                cc3.caption("点上面矩阵的格子会自动切换到那一格；也可以在这里手动选。谁最后改动听谁的。")
+                # 谁最后变了听谁的：点击变了用点击，下拉变了用下拉，否则沿用上次
+                box_cell = (pick_cell_sym, pick_cell_strat)
+                prev_click, prev_box = st.session_state.get("mx_prev_click"), st.session_state.get("mx_prev_box")
+                cur = st.session_state.get("mx_cur")
+                if click_cell and click_cell != prev_click:
+                    cur = click_cell
+                elif box_cell != prev_box:
+                    cur = box_cell
+                elif cur is None:
+                    cur = click_cell or box_cell
+                st.session_state["mx_prev_click"], st.session_state["mx_prev_box"], st.session_state["mx_cur"] = click_cell, box_cell, cur
+                sel_sym, sel_key = cur
+                if sel_sym not in syms_v:
+                    sel_sym, sel_key = box_cell
+                sel_lab = STRAT_LABEL[sel_key]
+                if True:
+                    if sel_key and sel_sym in syms_v:
+                        cell = mx[(mx["标的"] == sel_sym) & (mx["策略key"] == sel_key)]
+                        c_txt = (f"{int(cell.iloc[0]['信号数'])} 个信号 · 胜率 {cell.iloc[0]['胜率%']:.0f}%（基准 {cell.iloc[0]['基准胜率%']:.0f}%）· "
+                                 f"平均 {cell.iloc[0]['平均%']:+.2f}%（基准 {cell.iloc[0]['基准平均%']:+.2f}%）") if len(cell) else "该格子样本不足"
+                        section_header(f"{sel_sym} · {sel_lab}", [(c_txt, "")])
+                        g1, g2 = st.columns([1.7, 1], gap="large")
+                        with g1:
+                            days_sel = st.select_slider("显示区间", options=[180, 365, 730, 1500, 3000], value=730, key="mx_days", format_func=lambda d: f"{d} 天")
+                            try:
+                                res_cell = cached_event_study(sel_key, json.dumps(strat_params(sel_key), sort_keys=True), (sel_sym,), str(ev_start), str(ev_end), int(dedupe), bool(regime_only))
+                                fig_c, df_c, note_c = build_price_fig(sel_sym, "1d", days_sel, [sel_key], height=520, show_raw=False, show_trades=True, show_holding=True)
+                                sg = res_cell.signals.copy()
+                                if len(sg):
+                                    sg["date"] = pd.to_datetime(sg["date"])
+                                    sg = sg[(sg["date"] >= df_c.index[0]) & (sg["date"] <= df_c.index[-1])]
+                                    lows = df_c["low"]
+                                    for part, colr, nm in ((sg[sg["fwd_20"] > 0], "#15803d", "信号→20bar 后赢"), (sg[sg["fwd_20"] <= 0], "#dc2626", "信号→20bar 后亏")):
+                                        if len(part):
+                                            fig_c.add_trace(go.Scatter(x=part["date"], y=lows.reindex(part["date"]).values * 0.94, mode="markers", name=nm,
+                                                                       marker=dict(symbol="circle", size=9, color=colr, line=dict(color="white", width=1)),
+                                                                       text=[f"{d:%Y-%m-%d} 20bar {r:+.1f}%" for d, r in zip(part["date"], part["fwd_20"])],
+                                                                       hovertemplate="%{text}<extra></extra>"), 1, 1)
+                                st.plotly_chart(fig_c, width="stretch", config=PLOTLY_CONFIG)
+                                st.caption("圆点 = 这个格子统计里用到的信号（已去重），绿 = 持有 20 bar 收益为正，红 = 为负；三角和底色是策略回放的实际进出与持仓。" + note_c)
+                            except Exception as e:
+                                st.error(f"图表失败：{e}")
+                        with g2:
+                            st.markdown("**信号明细**（持有 5 / 20 / 60 bar 收益，MAE = 20 bar 内最大回撤）")
+                            try:
+                                sg2 = res_cell.signals.copy()
+                                if len(sg2):
+                                    sg2["date"] = pd.to_datetime(sg2["date"]).dt.strftime("%Y-%m-%d")
+                                    cols_show = [c for c in ["date", "fwd_5", "fwd_20", "fwd_60", "mae_20", "mfe_20"] if c in sg2.columns]
+                                    show_sg = sg2[cols_show].rename(columns={"date": "信号日", "fwd_5": "5bar%", "fwd_20": "20bar%", "fwd_60": "60bar%", "mae_20": "MAE20%", "mfe_20": "MFE20%"}).sort_values("信号日", ascending=False)
+                                    st.dataframe(show_sg.style.map(lambda v: "color:#15803d" if isinstance(v, float) and v > 0 else ("color:#b91c1c" if isinstance(v, float) and v < 0 else ""),
+                                                                   subset=[c for c in show_sg.columns if c != "信号日"]),
+                                                 hide_index=True, width="stretch", height=min(42 + 35 * len(show_sg), 560),
+                                                 column_config={c: st.column_config.NumberColumn(format="%+.1f%%") for c in show_sg.columns if c != "信号日"})
+                                else:
+                                    st.caption("这段时间没有信号。")
+                            except Exception as e:
+                                st.error(f"明细失败：{e}")
 
                 r1c, r2c = st.columns(2, gap="large")
                 fmt = {"胜率%": st.column_config.NumberColumn(format="%.0f%%"), "基准胜率%": st.column_config.NumberColumn(format="%.0f%%"),
