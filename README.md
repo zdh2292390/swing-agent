@@ -14,10 +14,12 @@ Python · Streamlit · yfinance · Alpaca (paper/live). Chinese/English UI, ligh
   (FOMC / BEA / Census / BLS), earnings calendar.
 - **Options**: 0DTE range/breakout probabilities, LEAP call comparison (delta, leverage, breakeven, implied vs
   historical win rate, contract price & IV history), underlying IV30 / HV30 / IV Rank (self-accumulated history).
-- **Validation**: event studies (forward returns after a signal vs baseline, by year, by symbol), vectorised
-  backtests with slot-based portfolio, ATR stops, market-regime filter, no-lookahead tests.
-- **Execution**: local paper broker or Alpaca paper/live via API; risk layer (position caps, daily loss halt, drawdown kill switch);
-  "fresh" entry mode that only follows new signals.
+- **Validation**: event studies (forward returns after a signal vs baseline, by year, by symbol, per-stock selection),
+  a strategy × symbol win-rate matrix with best-strategy-per-stock / best-stock-per-strategy rankings, vectorised
+  backtests with slot-based portfolio, ATR stops, market-regime filter, no-lookahead tests for every strategy.
+- **Execution**: local paper broker or Alpaca paper/live via API (account, positions with P&L, orders, equity history in the UI;
+  keys entered in a local-only settings form, never committed); risk layer (position caps, daily loss halt, drawdown kill switch);
+  "fresh" entry mode that only follows new signals; running-strategy status card with next decision time.
 
 Everything is historical statistics and rules. **Nothing here is investment advice.**
 

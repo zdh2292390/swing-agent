@@ -109,3 +109,34 @@ def test_extract_trades_uses_next_open_prices():
     assert t["entry_px"] == df["open"].iloc[2] and t["exit_px"] == df["open"].iloc[4]
     assert abs(t["ret"] - (df["open"].iloc[4] / df["open"].iloc[2] - 1)) < 1e-12
     assert trade_stats(tr)["n_trades"] == 1
+
+
+def test_time_stop_counts_only_the_symbols_own_bars():
+    """并集里多出别的标的的交易日（如美股休市而韩股开市），不应让美股的时间止损提前触发。"""
+    import numpy as np
+    import pandas as pd
+    from tradebot.strategies.swing import SwingStrategy
+    from dataclasses import dataclass
+
+    NY = "America/New_York"
+
+    @dataclass
+    class AlwaysIn(SwingStrategy):
+        name: str = "always_in"
+
+        def compute(self, symbol, df):
+            entry = pd.Series(False, index=df.index)
+            entry.iloc[30] = True
+            return pd.DataFrame({"entry": entry, "exit": False, "score": 1.0}, index=df.index)
+
+    def bars(idx):
+        c = np.linspace(100, 110, len(idx))
+        return pd.DataFrame({"open": c, "high": c * 1.01, "low": c * 0.99, "close": c, "volume": 1e6}, index=idx)
+
+    us = pd.bdate_range("2026-01-05", periods=60, tz=NY)
+    us = us.drop(us[40])                                     # 美股某天休市
+    kr = pd.bdate_range("2026-01-05", periods=60, tz=NY)     # 韩股那天照常交易
+    strat = AlwaysIn(max_hold_bars=10, atr_stop_mult=0, regime_filter=False)
+    W = strat.target_weights({"US": bars(us), "005930.KS": bars(kr)})
+    held_days = W["US"].reindex(us).fillna(0).gt(0).sum()
+    assert held_days == 10, held_days                         # 正好 10 根自己的 bar，不因并集多一天而变成 9

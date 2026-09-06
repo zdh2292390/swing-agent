@@ -23,6 +23,7 @@ import numpy as np
 from tradebot.backtest import event_study, run_backtest, slice_result
 from tradebot.backtest.metrics import metrics_table
 from tradebot.config import DEFAULT_BACKTEST_DAYS, DEFAULT_LOOKBACK_DAYS, ROOT, load_settings
+from tradebot.config import ROOT as ROOT_DIR
 from tradebot.data import INTERVAL_INFO, drop_incomplete_last_bar, fetch_bars, latest_prices
 from tradebot.earnings import EarningsCalendar
 from tradebot.execution import make_broker
@@ -829,6 +830,55 @@ with st.sidebar:
                 wl.remove_group(grp)
                 wl.save()
                 st.rerun()
+    if not CLOUD:
+        with st.expander("连接设置（券商 / 密钥）", expanded=False):
+            from tradebot.config import update_env
+
+            st.caption("密钥只写进本机项目目录的 .env，不回显、不上传。模拟盘和实盘的 key 是两组，别混。")
+            mode_pick = st.selectbox("执行模式", ["local", "alpaca"], index=["local", "alpaca"].index(S.mode if S.mode in ("local", "alpaca") else "local"), key="conn_mode",
+                                     format_func=lambda m: {"local": "local · 本地模拟撮合（无需账户）", "alpaca": "alpaca · Alpaca 模拟盘 / 实盘"}[m])
+            has_key = bool(S.alpaca_api_key) and bool(S.alpaca_secret_key)
+            st.markdown(f"当前 Alpaca 密钥：{'已填（••••' + S.alpaca_api_key[-4:] + '）' if has_key else '未填'}")
+            new_key = st.text_input("Alpaca API Key", type="password", key="conn_key", placeholder="留空则保留现有")
+            new_secret = st.text_input("Alpaca Secret Key", type="password", key="conn_secret", placeholder="留空则保留现有")
+            paper_pick = st.checkbox("模拟盘（ALPACA_PAPER=true）", value=S.alpaca_paper, key="conn_paper", help="取消勾选 = 实盘，会用真钱下单")
+            if not paper_pick:
+                st.warning("你选择了实盘。请确认填的是 Live 的 key，并且模拟盘已经跑过足够长时间。")
+            if st.button("保存并测试连接", type="primary", width="stretch", key="conn_save"):
+                vals = {"MODE": mode_pick, "ALPACA_PAPER": "true" if paper_pick else "false"}
+                if new_key.strip():
+                    vals["ALPACA_API_KEY"] = new_key.strip()
+                if new_secret.strip():
+                    vals["ALPACA_SECRET_KEY"] = new_secret.strip()
+                update_env(vals)
+                ok_msg, err_msg = None, None
+                if mode_pick == "alpaca":
+                    try:
+                        from tradebot.config import load_settings as _ls
+                        from tradebot.execution import make_broker as _mb
+
+                        _b = _mb(_ls())
+                        _a = _b.account()
+                        ok_msg = f"连接成功：{_b.name} · 净值 {_a.equity:,.0f} · 现金 {_a.cash:,.0f} · 持仓 {len(_b.positions())} 只"
+                    except Exception as _e:
+                        err_msg = f"连接失败：{_e}"
+                else:
+                    ok_msg = "已切回本地模拟撮合。"
+                st.session_state["conn_result"] = (ok_msg, err_msg)
+                load_data.clear()
+                st.rerun()
+            res_conn = st.session_state.get("conn_result")
+            if res_conn:
+                ok_msg, err_msg = res_conn
+                if ok_msg:
+                    st.success(ok_msg)
+                if err_msg:
+                    st.error(err_msg)
+            if st.button("重启循环进程（让新配置生效）", width="stretch", key="conn_restart_loop"):
+                import subprocess
+
+                r = subprocess.run(["./manage.sh", "restart", "loop"], cwd=str(ROOT_DIR), capture_output=True, text=True)
+                st.code((r.stdout + r.stderr).strip()[-600:] or "已执行")
     with st.expander("配置（来自 .env）", expanded=False):
         st.markdown(
             f"**模式** `{S.mode}` · **周期** `{S.interval}` · **起步** `{S.entry_mode}`（{'只跟新入场' if S.entry_mode == 'fresh' else '对齐策略仓位'}）  \n"
@@ -1908,6 +1958,38 @@ def cached_event_study(name: str, pjson: str, symbols: tuple[str, ...], start: s
     return event_study(strat, data, dedupe_bars=dedupe, start=start or None, end=end or None, regime_only=regime_only)
 
 
+@st.cache_data(ttl=1800, show_spinner="逐个策略统计每只标的的胜率 ...")
+def cached_matrix(names: tuple[str, ...], symbols: tuple[str, ...], start: str, end: str, dedupe: int, regime_only: bool, h: int = 20) -> pd.DataFrame:
+    """策略 × 标的：信号数、胜率、平均、基准胜率/平均、超额。长表，每行一个 (策略, 标的)。"""
+    data = load_data(symbols, "1d", default_days("1d"))
+    rows = []
+    for name in names:
+        strat = get_strategy(name, **strat_params(name))
+        d = dict(data)
+        if regime_only:
+            rs = getattr(strat, "regime_symbol", "SPY")
+            d.setdefault(rs, load_data((rs,), "1d", default_days("1d"))[rs])
+        try:
+            res = event_study(strat, d, dedupe_bars=dedupe, start=start or None, end=end or None, regime_only=regime_only)
+        except Exception:
+            continue
+        col = f"fwd_{h}"
+        sig, base = res.signals, res.baseline
+        if col not in sig.columns:
+            continue
+        b_by = base.groupby("symbol")[col].agg(基准平均=lambda x: x.mean(), 基准胜率=lambda x: (x > 0).mean() * 100) if len(base) else pd.DataFrame()
+        for sym, g in sig.groupby("symbol"):
+            v = g[col].dropna()
+            if len(v) == 0:
+                continue
+            bm = float(b_by.loc[sym, "基准平均"]) if sym in b_by.index else np.nan
+            bw = float(b_by.loc[sym, "基准胜率"]) if sym in b_by.index else np.nan
+            rows.append({"策略": STRAT_LABEL[name], "策略key": name, "标的": sym, "信号数": int(len(v)),
+                         "胜率%": float((v > 0).mean() * 100), "平均%": float(v.mean()), "基准胜率%": bw, "基准平均%": bm,
+                         "超额胜率": float((v > 0).mean() * 100 - bw) if not np.isnan(bw) else np.nan, "超额平均%": float(v.mean() - bm) if not np.isnan(bm) else np.nan})
+    return pd.DataFrame(rows)
+
+
 with tab_verify:
     v1, v2, v3, v4 = st.columns([1.6, 2, 1.6, 1])
     v_name = v1.selectbox("策略", list(STRATEGIES), index=list(STRATEGIES).index(S.strategy) if S.strategy in STRATEGIES else 0,
@@ -1920,9 +2002,11 @@ with tab_verify:
         ev_end = r2.date_input("止", value=dt.date.today(), key="ev_end")
     dedupe = v4.number_input("去重bar", 1, 60, 10, 1, key="ev_dedupe", help="同一标的多少根 bar 内的重复信号只算第一次")
     regime_only = st.checkbox("只统计大盘在 200 日线上方时的信号", value=False, key="ev_regime", help="对比勾选前后的超额，就能看到大盘过滤有没有用")
-    syms_v = [x for x in S.symbols if is_us_listed(x) and any(x in S.watchlist.groups[g] for g in pick_v)]
+    pool_v = [x for x in S.symbols if is_us_listed(x) and any(x in S.watchlist.groups[g] for g in pick_v)]
+    syms_v = st.multiselect("标的（默认板块内全部，可只留几只）", pool_v, default=pool_v, key=f"ev_symbols_{hash(tuple(pool_v))}",
+                            format_func=lambda x: x + (f" {display_name(x)}" if display_name(x) else ""))
     if not syms_v:
-        st.info("先选板块。")
+        st.info("先选板块或标的。")
     else:
         try:
             with st.expander("策略参数（默认用 .env / 默认值，可改后重算）", expanded=False):
@@ -1994,8 +2078,112 @@ with tab_verify:
         except Exception as e:
             st.error(f"信号验证失败：{e}")
 
+    # ---------- 策略 × 标的 ----------
+    if syms_v:
+        section_header("策略 × 标的 胜率", [("持有 20 bar", ""), (f"{len(syms_v)} 只 · {len(SWING_NAMES)} 个策略", ""), ("样本少的格子别当真", "warn")])
+        m1, m2, m3 = st.columns([1.2, 1, 1.2])
+        min_n = m1.slider("至少几个信号才计入", 1, 30, 5, key="mx_min_n")
+        metric = m2.selectbox("矩阵显示", ["胜率%", "超额胜率", "超额平均%", "平均%", "信号数"], key="mx_metric")
+        try:
+            mx = cached_matrix(tuple(SWING_NAMES), tuple(syms_v), str(ev_start), str(ev_end), int(dedupe), bool(regime_only))
+            if mx.empty:
+                st.caption("这段时间没有信号。")
+            else:
+                mx_ok = mx[mx["信号数"] >= min_n]
+                # ---- 热力矩阵：标的 × 策略 ----
+                piv = mx_ok.pivot(index="标的", columns="策略", values=metric).reindex(columns=[STRAT_LABEL[n] for n in SWING_NAMES])
+                cnt = mx_ok.pivot(index="标的", columns="策略", values="信号数").reindex(columns=piv.columns)
+                piv = piv.loc[piv.mean(axis=1).sort_values(ascending=False).index]
+                cnt = cnt.reindex(index=piv.index, columns=piv.columns)  # 行序跟着胜率矩阵走，否则样本数会错位
+                text = [[("" if (pd.isna(piv.iloc[i, j]) or pd.isna(cnt.iloc[i, j])) else f"{piv.iloc[i, j]:.0f} ({int(cnt.iloc[i, j])})")
+                         for j in range(piv.shape[1])] for i in range(piv.shape[0])]
+                zmid = {"胜率%": 50, "基准胜率%": 50}.get(metric, 0)
+                fig_m = go.Figure(go.Heatmap(z=piv.values, x=list(piv.columns), y=list(piv.index), colorscale="RdYlGn", zmid=zmid, text=text, texttemplate="%{text}",
+                                             textfont=dict(size=10), xgap=2, ygap=2,
+                                             hovertemplate="%{y} · %{x}<br>" + metric + " %{z:.1f}<extra></extra>", colorbar=dict(title=metric)))
+                fig_m.update_layout(template=TEMPLATE, height=max(340, 30 * len(piv) + 100), margin=dict(l=40, r=20, t=30, b=40), yaxis_autorange="reversed",
+                                    xaxis=dict(side="top"))
+                st.caption(f"格子 = {metric}（括号里是信号数）；行按各策略平均值从高到低排。")
+                st.plotly_chart(fig_m, width="stretch", config=PLOTLY_CONFIG)
+
+                r1c, r2c = st.columns(2, gap="large")
+                fmt = {"胜率%": st.column_config.NumberColumn(format="%.0f%%"), "基准胜率%": st.column_config.NumberColumn(format="%.0f%%"),
+                       "超额胜率": st.column_config.NumberColumn(format="%+.0f", help="信号胜率 − 该标的任意一天的基准胜率，百分点"),
+                       "平均%": st.column_config.NumberColumn(format="%+.2f%%"), "基准平均%": st.column_config.NumberColumn(format="%+.2f%%"),
+                       "超额平均%": st.column_config.NumberColumn(format="%+.2f%%"), "信号数": st.column_config.NumberColumn(format="%d")}
+                color_pos = lambda v: "color:#15803d;font-weight:600" if isinstance(v, float) and v > 0 else ("color:#b91c1c" if isinstance(v, float) and v < 0 else "")
+                with r1c:
+                    st.markdown("**每只个股：哪个策略最灵**（按胜率排）")
+                    sym_pick = st.selectbox("个股", sorted(mx_ok["标的"].unique()), key="mx_sym")
+                    t1 = mx_ok[mx_ok["标的"] == sym_pick].sort_values(["胜率%", "信号数"], ascending=[False, False])[["策略", "信号数", "胜率%", "基准胜率%", "超额胜率", "平均%", "超额平均%"]]
+                    st.dataframe(t1.style.map(color_pos, subset=["超额胜率", "超额平均%"]), hide_index=True, width="stretch", height=42 + 35 * len(t1), column_config=fmt)
+                with r2c:
+                    st.markdown("**每个策略：在哪些个股上最灵**（按胜率排）")
+                    st_pick = st.selectbox("策略", SWING_NAMES, format_func=lambda n: STRAT_LABEL[n], key="mx_strat")
+                    t2 = mx_ok[mx_ok["策略key"] == st_pick].sort_values(["胜率%", "信号数"], ascending=[False, False])[["标的", "信号数", "胜率%", "基准胜率%", "超额胜率", "平均%", "超额平均%"]]
+                    st.dataframe(t2.style.map(color_pos, subset=["超额胜率", "超额平均%"]), hide_index=True, width="stretch", height=min(42 + 35 * len(t2), 520), column_config=fmt)
+                st.caption("胜率 = 信号后持有 20 根 bar 收益为正的比例；基准胜率 = 同一只股票任意一天持有 20 根 bar 的正收益比例；超额胜率 = 两者之差（百分点）。"
+                           "这批股票过去十几年基准胜率本来就在 55%~65%，所以看超额比看绝对胜率有意义。信号少于所选下限的格子不显示；"
+                           "一只股票十几个信号算出来的胜率抖动很大，别拿单格下结论。")
+        except Exception as e:
+            st.error(f"矩阵计算失败：{e}")
+
 
 # ================= 模拟盘 =================
+def loop_status() -> dict:
+    """循环进程是否在跑、上次决策、下次决策时间。"""
+    import os as _os2
+    pid_file = S.log_dir / "run.pid"
+    alive, pid = False, None
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            _os2.kill(pid, 0)
+            alive = True
+        except Exception:
+            alive = False
+    decs = read_decisions()
+    last = pd.Timestamp(decs[-1]["time"]).tz_convert(NY) if decs else None
+    now = pd.Timestamp.now(tz=NY)
+    # 下次决策：日线 = 下一个交易日 9:35；小时线 = 下一个 10:31~15:31 的整点 31 分
+    d = now
+    for _ in range(10):
+        candidate_day = d.normalize()
+        is_trading = candidate_day.weekday() < 5 and candidate_day.date() not in nyse_holidays_set(candidate_day.year)
+        if is_trading:
+            slots = [candidate_day + pd.Timedelta(hours=9, minutes=35)] if S.interval == "1d" else [candidate_day + pd.Timedelta(hours=h, minutes=31) for h in range(10, 16)]
+            future = [t for t in slots if t > now]
+            if future:
+                return {"alive": alive, "pid": pid, "last": last, "next": future[0]}
+        d = candidate_day + pd.Timedelta(days=1)
+    return {"alive": alive, "pid": pid, "last": last, "next": None}
+
+
+def nyse_holidays_set(year: int):
+    from tradebot.econ_calendar import nyse_holidays
+    return nyse_holidays(year)
+
+
+def running_strategy_card() -> None:
+    ls = loop_status()
+    strat = get_strategy(S.strategy, **S.strategy_params)
+    params = ", ".join(f"{k}={v}" for k, v in S.strategy_params.items()) or "默认参数"
+    rg = regime_status()
+    dot = "#16a34a" if ls["alive"] else "#dc2626"
+    with st.container(border=True):
+        c1, c2, c3, c4 = st.columns([2, 1.3, 1.3, 1.3])
+        c1.markdown(f"**正在运行的策略**<br><span style='font-size:1.15rem;font-weight:700'>{STRAT_LABEL.get(S.strategy, S.strategy)}</span> "
+                    f"<span style='color:var(--tb-muted);font-size:.85em'>{params}</span><br>"
+                    f"<span style='color:var(--tb-muted);font-size:.85em'>周期 {S.interval} · 起步 {'只跟新入场' if S.entry_mode == 'fresh' else '对齐策略仓位'} · "
+                    f"最多 {getattr(strat, 'max_positions', '-')} 只 · ATR 止损 {getattr(strat, 'atr_stop_mult', '-')}× · 大盘过滤 {'开' if getattr(strat, 'regime_filter', False) else '关'}"
+                    f"{'' if rg.get('ok', True) else '（当前拦截新仓）'}</span>", unsafe_allow_html=True)
+        c2.markdown(f"**循环进程**<br><span class='tb-dot' style='background:{dot}'></span>{'运行中' if ls['alive'] else '未运行'}"
+                    + (f" <span style='color:var(--tb-muted);font-size:.8em'>pid {ls['pid']}</span>" if ls["pid"] else ""), unsafe_allow_html=True)
+        c3.markdown(f"**上次决策**<br>{ls['last']:%m-%d %H:%M}" if ls["last"] is not None else "**上次决策**<br>—", unsafe_allow_html=True)
+        c4.markdown(f"**下次决策**<br>{ls['next']:%m-%d %H:%M} ET" if ls["next"] is not None else "**下次决策**<br>—", unsafe_allow_html=True)
+        st.caption("风控：单标的 " + f"{S.max_position_pct:.0%}" + f" · 总仓位 {S.max_gross_exposure:.0%} · 当日亏损 {S.daily_loss_limit_pct:.0%} 熔断 · 回撤 {S.max_drawdown_pct:.0%} 停机 · 决策用最后一根完整 bar，下一根开盘成交")
+
+
 with tab_paper:
     try:
         broker = make_broker(S)
@@ -2008,8 +2196,10 @@ with tab_paper:
         day_start = risk_state.get("day_start_equity", acct.equity)
         peak = risk_state.get("peak_equity", acct.equity)
 
+        running_strategy_card()
+        is_alpaca = broker.name.startswith("alpaca")
         h1, h2 = st.columns([3, 1])
-        h1.subheader(f"账户 · {broker.name}")
+        h1.subheader(f"账户 · {broker.name}" + ("（Alpaca 模拟盘，虚拟资金）" if broker.name == "alpaca_paper" else ("（Alpaca 实盘）" if broker.name == "alpaca_live" else "（本地模拟撮合）")))
         with h2:
             b1, b2 = st.columns(2)
             if not CLOUD and b1.button("立刻运行一次", type="primary", help="忽略开盘时间检查，跑一遍 拉数据→信号→风控→下单"):
@@ -2029,17 +2219,39 @@ with tab_paper:
                         (S.log_dir / name).unlink(missing_ok=True)
                     st.rerun()
 
-        k1, k2, k3, k4, k5 = st.columns(5)
-        k1.metric("净值", f"{acct.equity:,.0f}", (pct(acct.equity / day_start - 1) if day_start else "n/a") + " 今日")
-        k2.metric("现金", f"{acct.cash:,.0f}", f"{acct.cash / acct.equity * 100:.0f}% 仓外", delta_color="off")
-        k3.metric("持仓数", f"{len(positions)}")
-        k4.metric("距高点回撤", pct(acct.equity / peak - 1), f"停机线 -{S.max_drawdown_pct:.0%}", delta_color="off")
-        k5.metric("当日熔断线", f"-{S.daily_loss_limit_pct:.0%}", f"单标的上限 {S.max_position_pct:.0%}", delta_color="off")
+        det = broker.account_details() if is_alpaca else None
+        k1, k2, k3, k4, k5, k6 = st.columns(6)
+        if det:
+            today_pl = (det["equity"] - det["last_equity"]) if det.get("last_equity") else None
+            k1.metric("净值", f"{det['equity']:,.0f}", (f"{today_pl:+,.0f}（{today_pl / det['last_equity'] * 100:+.2f}%）今日" if today_pl is not None and det["last_equity"] else None))
+            k2.metric("现金", f"{det['cash']:,.0f}", f"购买力 {det['buying_power']:,.0f}", delta_color="off")
+            k3.metric("持仓市值", f"{sum(p.market_value for p in positions.values()):,.0f}", f"{len(positions)} 只", delta_color="off")
+            k4.metric("距高点回撤", pct(acct.equity / peak - 1), f"停机线 -{S.max_drawdown_pct:.0%}", delta_color="off")
+            k5.metric("账户状态", det["status"], f"日内交易 {det['daytrade_count']} 次" + ("，PDT" if det["pattern_day_trader"] else ""), delta_color="off")
+            k6.metric("杠杆倍数", f"{det['multiplier']:.0f}x" if det.get("multiplier") else "—", "模拟盘" if det["paper"] else "实盘", delta_color="off")
+        else:
+            k1.metric("净值", f"{acct.equity:,.0f}", (pct(acct.equity / day_start - 1) if day_start else "n/a") + " 今日")
+            k2.metric("现金", f"{acct.cash:,.0f}", f"{acct.cash / acct.equity * 100:.0f}% 仓外", delta_color="off")
+            k3.metric("持仓数", f"{len(positions)}")
+            k4.metric("距高点回撤", pct(acct.equity / peak - 1), f"停机线 -{S.max_drawdown_pct:.0%}", delta_color="off")
+            k5.metric("当日熔断线", f"-{S.daily_loss_limit_pct:.0%}", f"单标的上限 {S.max_position_pct:.0%}", delta_color="off")
+            k6.metric("模式", "本地模拟", "无真实账户", delta_color="off")
 
         c1, c2 = st.columns([1, 1], gap="large")
         with c1:
             st.markdown("**持仓**")
-            if positions:
+            if is_alpaca and positions:
+                pdz = pd.DataFrame(broker.positions_detail())
+                pdz = pdz.rename(columns={"symbol": "标的", "qty": "数量", "avg_price": "成本", "current_price": "现价", "market_value": "市值",
+                                          "unrealized_pl": "浮动盈亏$", "unrealized_plpc": "浮动盈亏%", "change_today": "今日%"})
+                pdz["占净值%"] = pdz["市值"] / acct.equity * 100
+                st.dataframe(pdz[["标的", "数量", "成本", "现价", "市值", "浮动盈亏$", "浮动盈亏%", "今日%", "占净值%"]].style.map(
+                    lambda v: "color:#15803d" if isinstance(v, float) and v > 0 else ("color:#b91c1c" if isinstance(v, float) and v < 0 else ""), subset=["浮动盈亏$", "浮动盈亏%", "今日%"]),
+                    width="stretch", hide_index=True,
+                    column_config={"成本": st.column_config.NumberColumn(format="%.2f"), "现价": st.column_config.NumberColumn(format="%.2f"), "市值": st.column_config.NumberColumn(format="%,.0f"),
+                                   "浮动盈亏$": st.column_config.NumberColumn(format="%+,.0f"), "浮动盈亏%": st.column_config.NumberColumn(format="%+.2f%%"),
+                                   "今日%": st.column_config.NumberColumn(format="%+.2f%%"), "占净值%": st.column_config.NumberColumn(format="%.1f%%")})
+            elif positions:
                 rows = []
                 for sym, p in positions.items():
                     px = p.market_value / p.qty if p.qty else 0.0
@@ -2050,15 +2262,41 @@ with tab_paper:
             else:
                 st.caption("空仓")
         with c2:
-            st.markdown("**净值曲线**（每次决策前记录）")
-            decs = read_decisions()
-            if decs:
+            if is_alpaca:
+                st.markdown("**净值曲线**（Alpaca 账户历史）")
+                try:
+                    ph = broker.portfolio_history("3M", "1D")
+                    ph = ph.dropna(subset=["equity"])
+                    if len(ph) > 1:
+                        figp = go.Figure(go.Scatter(x=ph.index, y=ph["equity"], mode="lines", line=dict(color="#2563eb", width=1.8), fill="tozeroy", fillcolor="rgba(37,99,235,.08)"))
+                        figp.update_layout(template=TEMPLATE, height=260, margin=dict(l=40, r=20, t=10, b=30), yaxis_title="净值")
+                        st.plotly_chart(figp, width="stretch", config=PLOTLY_CONFIG)
+                    else:
+                        st.caption("账户还没有足够的历史。")
+                except Exception as e:
+                    st.caption(f"净值历史获取失败：{e}")
+                oo = broker.orders("open")
+                st.markdown(f"**未成交订单** {len(oo)}")
+                if oo:
+                    st.dataframe(pd.DataFrame(oo)[["symbol", "side", "type", "qty", "filled_qty", "limit_price", "status", "submitted_at"]], hide_index=True, width="stretch")
+                co = broker.orders("closed", limit=20, days=30)
+                st.markdown(f"**最近 30 天成交 / 结束订单** {len(co)}")
+                if co:
+                    cdf = pd.DataFrame(co)
+                    cdf["filled_at"] = pd.to_datetime(cdf["filled_at"], utc=True, errors="coerce").dt.tz_convert(NY).dt.strftime("%m-%d %H:%M")
+                    st.dataframe(cdf[["symbol", "side", "qty", "filled_qty", "filled_avg_price", "status", "filled_at"]], hide_index=True, width="stretch",
+                                 column_config={"filled_avg_price": st.column_config.NumberColumn(format="%.2f")})
+                decs = read_decisions()
+            else:
+                st.markdown("**净值曲线**（每次决策前记录）")
+                decs = read_decisions()
+            if not is_alpaca and decs:
                 eq = pd.DataFrame({"time": [d["time"] for d in decs], "equity": [d["equity_before"] for d in decs]})
                 eq["time"] = pd.to_datetime(eq["time"], utc=True).dt.tz_convert(NY)
                 fig = go.Figure(go.Scatter(x=eq["time"], y=eq["equity"], mode="lines+markers", line=dict(color="#2563eb")))
                 fig.update_layout(template=TEMPLATE, height=260, margin=dict(l=40, r=20, t=10, b=30))
                 st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
-            else:
+            elif not is_alpaca:
                 st.caption("还没有运行记录")
 
         if decs:

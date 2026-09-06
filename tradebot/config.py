@@ -136,3 +136,33 @@ def load_settings() -> Settings:
     s.log_dir.mkdir(parents=True, exist_ok=True)
     s.cache_dir.mkdir(parents=True, exist_ok=True)
     return s
+
+
+def update_env(values: dict[str, str], path: Path | None = None) -> Path:
+    """把若干键写回 .env：已有的行原地替换（保留行内注释），没有的追加；然后刷新当前进程的环境变量。"""
+    import re
+
+    path = path or (ROOT / ".env")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    done = set()
+    out = []
+    for line in lines:
+        m = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)=(.*)$", line)
+        if m and m.group(1) in values:
+            key = m.group(1)
+            rest = m.group(2)
+            comment = ""
+            if "#" in rest:
+                comment = "  #" + rest.split("#", 1)[1]
+            out.append(f"{key}={values[key]}{comment}")
+            done.add(key)
+        else:
+            out.append(line)
+    for key, val in values.items():
+        if key not in done:
+            out.append(f"{key}={val}")
+    path.write_text("\n".join(out) + "\n", encoding="utf-8")
+    load_dotenv(path, override=True)
+    for key, val in values.items():
+        os.environ[key] = str(val)
+    return path

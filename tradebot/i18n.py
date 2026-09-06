@@ -167,6 +167,11 @@ T: dict[str, str] = {
     "参数：实盘策略用 .env 的值，其他用默认": "params: live strategy uses .env, others use defaults", "显示": "Shown", "含义": "Meaning", "列": "Column",
     "正股隐含波动率": "Underlying implied volatility", "IV30%": "IV30 %", "HV30%": "HV30 %", "历史天数": "History days", "区间低%": "Range low %", "区间高%": "Range high %",
     "近/远IV": "Near/far IV", "IV/VIX": "IV / VIX", "近月到期": "Near expiry", "远月到期": "Far expiry", "合约IV百分位": "Contract IV pct", "IV30 = 30 天平值隐含波动率，真实报价": "IV30 = 30-day ATM implied vol, real quotes",
+    "标的（默认板块内全部，可只留几只）": "Symbols (all in selected groups by default)", "策略 × 标的 胜率": "Strategy × symbol win rate",
+    "至少几个信号才计入": "Min signals to include", "矛阵显示": "Matrix metric", "矩阵显示": "Matrix metric", "胜率%": "Win rate %", "超额胜率": "Excess win rate",
+    "超额平均%": "Excess avg %", "平均%": "Avg %", "基准胜率%": "Baseline win %", "基准平均%": "Baseline avg %", "信号数": "Signals",
+    "每只个股：哪个策略最灵（按胜率排）": "Per symbol: best strategies (by win rate)", "每个策略：在哪些个股上最灵（按胜率排）": "Per strategy: best symbols (by win rate)",
+    "个股": "Symbol", "样本少的格子别当真": "Ignore low-sample cells", "持有 20 bar": "Hold 20 bars",
     "主升浪体检": "Main-wave checklist", "模板": "template", "乖离 SMA50": "vs SMA50",
     # 图例短语（先于单字匹配）
     "满足入场条件": "entry conditions met", "模拟入场": "replay entry", "模拟退出": "replay exit", "模拟持仓期": "replay holding period", "成交价": "trade price",

@@ -170,12 +170,13 @@ class SwingStrategy(PortfolioStrategy):
                 if math.isnan(c):
                     continue
                 p = held[j]
+                p["bars"] += 1  # 只在该标的自己有 bar 的日子计数，避免别的标的（如韩股）的交易日把持有天数数多
                 a = atr_a[i, j]
                 if self.trailing_stop and mult > 0 and not math.isnan(a):
                     p["high"] = max(p["high"], c)
                     p["stop"] = max(p["stop"], p["high"] - mult * a) if not math.isnan(p["stop"]) else p["high"] - mult * a
                 hit_stop = mult > 0 and not math.isnan(p["stop"]) and low[i, j] <= p["stop"]
-                timed_out = self.max_hold_bars > 0 and (i - p["entry_i"]) >= self.max_hold_bars
+                timed_out = self.max_hold_bars > 0 and p["bars"] >= self.max_hold_bars
                 earn_exit = self.exit_before_earnings and blackout[i, j]
                 regime_out = self.regime_exit and not regime_ok[i]
                 if exit_[i, j] or hit_stop or timed_out or earn_exit or regime_out:
@@ -197,7 +198,7 @@ class SwingStrategy(PortfolioStrategy):
                         v = vol_a[i, j]
                         if not math.isnan(v) and v > 0:
                             w = min((self.target_vol / self.max_positions) / v, 2.0 / self.max_positions, 1.0)
-                    held[j] = {"entry_i": i, "stop": stop, "high": c, "w": w}
+                    held[j] = {"entry_i": i, "stop": stop, "high": c, "w": w, "bars": 0}
             # 3. 权重
             for j, p in held.items():
                 W[i, j] = p["w"]
