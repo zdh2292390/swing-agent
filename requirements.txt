@@ -1,0 +1,13 @@
+pandas>=2.2
+numpy>=1.26
+pyarrow>=15
+yfinance>=0.2.50
+alpaca-py>=0.30
+anthropic
+pydantic>=2.7
+python-dotenv>=1.0
+APScheduler>=3.10,<4
+matplotlib>=3.8
+pytest>=8
+streamlit>=1.35
+plotly>=5.20

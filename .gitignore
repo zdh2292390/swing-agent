@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+.pytest_cache/
+logs/*
+!logs/.gitkeep
+data_cache/*
+!data_cache/.gitkeep
+.venv/
+ui_prefs.json
+.streamlit/secrets.toml
+ui_prefs.json
+watchlist.json
