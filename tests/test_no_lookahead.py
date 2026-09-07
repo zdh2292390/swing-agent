@@ -22,7 +22,7 @@ def _bars(n=320, seed=0):
 
 
 def _strategy(name):
-    kw = {"swing_k": 3} if name == "bottom_recovery" else {}
+    kw = {"swing_k": 3} if name in ("bottom_recovery", "double_bottom") else {}
     s = get_strategy(name, **kw)
     if name == "post_earnings":  # 注入一份财报日历，避免联网
         ev = pd.DataFrame({"surprise_pct": [5.0, 3.0, -2.0]},

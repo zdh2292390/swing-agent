@@ -96,7 +96,7 @@ T: dict[str, str] = {
     "标的池是空的，先在侧边栏“编辑标的池”里添加。": "The watchlist is empty. Add symbols in the sidebar.",
     "只": "names", "多头": "bull", "有信号": "with signals", "无": "none",
     # 策略名
-    "趋势回调": "Trend Pullback", "突破": "Breakout", "财报动量": "Earnings Momentum", "超跌反弹": "Oversold Bounce", "底部回升": "Bottom Recovery",
+    "趋势回调": "Trend Pullback", "突破": "Breakout", "财报动量": "Earnings Momentum", "超跌反弹": "Oversold Bounce", "底部回升": "Bottom Recovery", "W双底": "Double Bottom",
     "相对强度": "Relative Strength", "52周新高": "52w High", "主升浪": "Main Wave", "均线交叉": "MA Cross", "满仓": "Buy & Hold",
     "（实盘）": " (live)", "实盘策略": "live strategy",
     # 表格列

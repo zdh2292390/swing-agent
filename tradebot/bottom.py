@@ -7,6 +7,8 @@
   4. 收复均线   收盘 > SMA20 且 SMA20 比 5 根 bar 前高（拐头）
   5. 量能确认   突破日成交量 ≥ vol_mult × 20 日均量；还没突破就看低点之后最大的阳线量
   6. RSI       低点处 RSI 高于前低处 RSI 而价格不高于前低 1.02 倍（底背离），或当前 RSI > 50
+另附 W 双底识别（机械定义见 strategies.reversal.find_double_bottoms）：两个等高低点（±3%）、间隔 15~60 bar、颈线高出低点 ≥ 5%，
+  状态 = 形成中（等突破）/ 已突破 / 突破后回落 / 失效（跌破第二低点）/ 过期（第二低点后 40 bar 内没突破）。
 阶段：无明显下跌 / 未见底 / 初步企稳 / 确认 / 确认后回踩 / 跌破低点
 """
 from __future__ import annotations
@@ -17,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from .strategies.indicators import rsi, sma
+from .strategies.reversal import find_double_bottoms
 
 
 @dataclass
@@ -110,7 +113,9 @@ def analyze_bottom(df: pd.DataFrame, p: BottomParams = BottomParams()) -> dict:
         stage = "未见底"
 
     score = int(has_decline) + int(higher_low) + int(breakout_now) + int(reclaimed) + int(vol_ok) + int(rsi_ok)
+    w_info = describe_double_bottom(df, p)
     return {
+        **w_info,
         "阶段": stage, "得分": score,
         "跌幅%": round(drawdown * 100, 1), "前高": round(prior_high, 2),
         "低点日": w.index[L1].strftime("%m-%d"), "低点价": round(low1, 2),
@@ -125,6 +130,28 @@ def analyze_bottom(df: pd.DataFrame, p: BottomParams = BottomParams()) -> dict:
         "低点距今": bars_since_low,
         "_L0": int(L0) if L0 is not None else None, "_L1": int(L1), "_neckline": neckline, "_start": len(df) - len(w),
     }
+
+
+def describe_double_bottom(df: pd.DataFrame, p: BottomParams = BottomParams(), max_wait: int = 40) -> dict:
+    """最近一个落在回看窗口内的 W 双底及其状态；没有则 W双底 = '—'。"""
+    n = len(df)
+    start = max(0, n - p.lookback)
+    pats = [q for q in find_double_bottoms(df, swing_k=p.swing_k, lookback=p.lookback, drawdown_min=p.drawdown_min, max_wait=max_wait) if q["L1"] >= start]
+    if not pats:
+        return {"W双底": "—", "W低点差%": None, "W间隔": None, "_W": None}
+    q = pats[-1]
+    px = float(df["close"].iloc[-1])
+    if q["fail_i"] is not None:
+        status = "失效"
+    elif q["breakout_i"] is not None:
+        status = "已突破" if px > q["neckline"] else "突破后回落"
+    elif n - 1 - q["L1"] > max_wait:
+        status = "过期"
+    elif n - 1 < q["confirm_i"]:
+        status = "待确认"
+    else:
+        status = "形成中"
+    return {"W双底": status, "W低点差%": round((q["low1"] / q["low0"] - 1) * 100, 1), "W间隔": int(q["gap"]), "_W": q}
 
 
 def build_bottom_table(symbols: list[str], data: dict[str, pd.DataFrame], p: BottomParams = BottomParams(),

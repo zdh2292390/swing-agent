@@ -5,7 +5,7 @@ from .buy_and_hold import BuyAndHold
 from .ma_cross import MACross
 from .composite import MainWave
 from .momentum import High52Breakout, RelativeMomentum
-from .reversal import BottomRecovery, OversoldBounce
+from .reversal import BottomRecovery, DoubleBottom, OversoldBounce
 from .swing import Breakout, PostEarningsMomentum, SwingStrategy, TrendPullback
 
 STRATEGIES: dict[str, type] = {
@@ -14,6 +14,7 @@ STRATEGIES: dict[str, type] = {
     "post_earnings": PostEarningsMomentum,
     "oversold_bounce": OversoldBounce,
     "bottom_recovery": BottomRecovery,
+    "double_bottom": DoubleBottom,
     "relative_momentum": RelativeMomentum,
     "high52_breakout": High52Breakout,
     "main_wave": MainWave,
@@ -32,5 +33,5 @@ def get_strategy(name: str, **params):
 
 __all__ = [
     "Strategy", "PortfolioStrategy", "EqualWeightAdapter", "as_portfolio", "SwingStrategy",
-    "TrendPullback", "Breakout", "PostEarningsMomentum", "OversoldBounce", "BottomRecovery", "RelativeMomentum", "High52Breakout", "MainWave", "MACross", "BuyAndHold", "STRATEGIES", "get_strategy",
+    "TrendPullback", "Breakout", "PostEarningsMomentum", "OversoldBounce", "BottomRecovery", "DoubleBottom", "RelativeMomentum", "High52Breakout", "MainWave", "MACross", "BuyAndHold", "STRATEGIES", "get_strategy",
 ]

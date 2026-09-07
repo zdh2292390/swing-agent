@@ -134,3 +134,125 @@ class BottomRecovery(SwingStrategy):
 
     def warmup_bars(self) -> int:
         return self.lookback + self.swing_k + 30
+
+
+# ---------------------------------------------------------------------------
+# W 双底
+# ---------------------------------------------------------------------------
+def find_double_bottoms(df: pd.DataFrame, swing_k: int = 5, lookback: int = 120, drawdown_min: float = 0.10, low_tol: float = 0.03,
+                        min_gap: int = 15, max_gap: int = 60, min_neck_rise: float = 0.05, max_wait: int = 40) -> list[dict]:
+    """机械定义的 W 双底，全部因果。返回按时间排列的形态列表，每个是 dict：
+
+    L0 / L1        两个摆动低点的位置（左右各 swing_k 根 bar 内最低；L1 在 L1+swing_k 才被确认）
+    peak_i         两低点之间最高价所在的 bar（颈线位置）
+    neckline       两个低点之间的最高价
+    confirm_i      形态可被识别的第一根 bar = L1 + swing_k
+    breakout_i     confirm_i 起、L1 + max_wait 之内第一根收盘 > 颈线的 bar；没有则 None
+    fail_i         confirm_i 起第一根收盘 < 第二低点的 bar（形态失效）；没有则 None
+    条件：第一低点相对之前 lookback 内最高价跌 ≥ drawdown_min；第二低点在第一低点 ±low_tol 内；两低点间隔 [min_gap, max_gap]；
+          颈线比两低点中较高者至少高 min_neck_rise。
+    """
+    lo, hi, c = df["low"].values, df["high"].values, df["close"].values
+    n = len(df)
+    k = swing_k
+    lows = []
+    for i in range(k, n - k):
+        left, right = lo[i - k:i], lo[i + 1:i + k + 1]
+        if lo[i] < left.min() and lo[i] <= right.min():
+            lows.append(i)
+    out: list[dict] = []
+    for a in range(1, len(lows)):
+        L1 = lows[a]
+        # 第二低点往前找“最近一个符合条件的”第一低点（允许中间有更浅的小低点）
+        for b in range(a - 1, -1, -1):
+            L0 = lows[b]
+            gap = L1 - L0
+            if gap > max_gap:
+                break
+            if gap < min_gap:
+                continue
+            low0, low1 = lo[L0], lo[L1]
+            if abs(low1 / low0 - 1) > low_tol:
+                continue
+            if lo[L0 + 1:L1].min() < min(low0, low1):   # 两低点之间有更低的价，不是 W
+                continue
+            neckline = float(hi[L0:L1 + 1].max())
+            peak_i = L0 + int(np.argmax(hi[L0:L1 + 1]))
+            if neckline / max(low0, low1) - 1 < min_neck_rise:
+                continue
+            prior_high = float(hi[max(0, L0 - lookback):L0 + 1].max())
+            if prior_high <= 0 or 1 - low0 / prior_high < drawdown_min:
+                continue
+            confirm_i = L1 + k
+            breakout_i = fail_i = None
+            for t in range(confirm_i, min(n, L1 + max_wait + 1)):
+                if c[t] < low1:
+                    fail_i = t
+                    break
+                if c[t] > neckline:
+                    breakout_i = t
+                    break
+            out.append({"L0": L0, "L1": L1, "peak_i": peak_i, "low0": float(low0), "low1": float(low1), "neckline": neckline, "confirm_i": confirm_i,
+                        "breakout_i": breakout_i, "fail_i": fail_i, "gap": gap, "prior_high": prior_high})
+            break
+    return out
+
+
+@dataclass
+class DoubleBottom(SwingStrategy):
+    """W 双底：两个等高低点 + 中间反弹形成颈线，收盘突破颈线才进。
+
+    形态见 find_double_bottoms；第二低点要过 swing_k 根 bar 才确认，所以最早在 L1+swing_k 才可能入场。
+    entry = 形态确认后、第二低点起 max_wait 根 bar 内，第一根收盘 > 颈线（可选：成交量 > vol_mult × 20 bar 均量）
+    exit  = 收盘 < 第二低点（形态失效） 或 收盘 < SMA(sma_n) − 1×ATR；另有 ATR 跟踪止损
+    score = 颈线相对低点的高度（W 越深越优先）
+    """
+
+    swing_k: int = 5
+    lookback: int = 120
+    drawdown_min: float = 0.10
+    low_tol: float = 0.03
+    min_gap: int = 15
+    max_gap: int = 60
+    min_neck_rise: float = 0.05
+    max_wait: int = 40
+    vol_mult: float = 0.0
+    sma_n: int = 20
+    atr_stop_mult: float = 2.5
+    name: str = "double_bottom"
+
+    PARAM_HELP: ClassVar[dict[str, str]] = {
+        **BASE_HELP,
+        "swing_k": "摆动低点左右窗口（bar）；越大越可靠也越滞后", "lookback": "第一低点之前找前高的回看 bar 数",
+        "drawdown_min": "第一低点相对前高的最小跌幅（0.10 = 10%）", "low_tol": "第二低点与第一低点的最大价差（0.03 = ±3%）",
+        "min_gap": "两低点最小间隔（bar）", "max_gap": "两低点最大间隔（bar）", "min_neck_rise": "颈线至少高出低点这么多（0.05 = 5%）",
+        "max_wait": "第二低点后最多等多少根 bar 突破，过期作废", "vol_mult": "突破日成交量须 > N×20bar 均量；0 关闭", "sma_n": "退出用的均线周期",
+    }
+
+    def patterns(self, df: pd.DataFrame) -> list[dict]:
+        return find_double_bottoms(df, self.swing_k, self.lookback, self.drawdown_min, self.low_tol, self.min_gap, self.max_gap, self.min_neck_rise, self.max_wait)
+
+    def compute(self, symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+        c, v = df["close"], df["volume"]
+        n = len(df)
+        entry = np.zeros(n, dtype=bool)
+        score = np.full(n, np.nan)
+        active_low = np.full(n, np.nan)
+        for p in self.patterns(df):
+            bi = p["breakout_i"]
+            if bi is None:
+                continue
+            entry[bi] = True
+            score[bi] = p["neckline"] / max(p["low0"], p["low1"]) - 1
+            active_low[bi] = p["low1"]
+        entry_s = pd.Series(entry, index=df.index)
+        if self.vol_mult > 0:
+            entry_s &= (v > self.vol_mult * sma(v, 20)).fillna(False)
+        low_ref = pd.Series(active_low, index=df.index).ffill()
+        ma = sma(c, self.sma_n)
+        a = atr(df, self.atr_n)
+        exit_ = (c < low_ref) | (c < ma - a)
+        return pd.DataFrame({"entry": entry_s, "exit": exit_.fillna(False), "score": pd.Series(score, index=df.index).ffill()}, index=df.index)
+
+    def warmup_bars(self) -> int:
+        return self.lookback + self.max_gap + self.swing_k + 30

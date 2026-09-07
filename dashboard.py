@@ -260,9 +260,9 @@ def default_days(interval: str) -> int:
     return S.backtest_days if interval == S.interval else DEFAULT_BACKTEST_DAYS[interval]
 
 
-SWING_NAMES = ["trend_pullback", "breakout", "post_earnings", "oversold_bounce", "bottom_recovery", "relative_momentum", "high52_breakout", "main_wave"]
+SWING_NAMES = ["trend_pullback", "breakout", "post_earnings", "oversold_bounce", "bottom_recovery", "double_bottom", "relative_momentum", "high52_breakout", "main_wave"]
 STRAT_LABEL = {"trend_pullback": "趋势回调", "breakout": "突破", "post_earnings": "财报动量", "oversold_bounce": "超跌反弹",
-               "bottom_recovery": "底部回升", "relative_momentum": "相对强度", "high52_breakout": "52周新高", "main_wave": "主升浪",
+               "bottom_recovery": "底部回升", "double_bottom": "W双底", "relative_momentum": "相对强度", "high52_breakout": "52周新高", "main_wave": "主升浪",
                "ma_cross": "均线交叉", "buy_and_hold": "满仓"}
 
 
@@ -536,7 +536,7 @@ def cached_upcoming_earnings(symbols: tuple[str, ...], groups_key: str) -> pd.Da
 
 
 STRAT_COLOR = {"trend_pullback": "#2563eb", "breakout": "#7c3aed", "post_earnings": "#f59e0b", "oversold_bounce": "#0891b2",
-               "bottom_recovery": "#16a34a", "relative_momentum": "#db2777", "high52_breakout": "#b45309", "main_wave": "#dc2626",
+               "bottom_recovery": "#16a34a", "double_bottom": "#0891b2", "relative_momentum": "#db2777", "high52_breakout": "#b45309", "main_wave": "#dc2626",
                "ma_cross": "#6b7280", "buy_and_hold": "#9ca3af"}
 
 
@@ -909,7 +909,7 @@ with tab_sig:
         st.markdown(
             "- **▲ 今日**：今天收盘满足该策略的入场条件；**▲ n天前**：最近 5 天内出现过；空白：没有。勾“显示出场条件”后 **▼** 表示今天满足出场规则。\n"
             "- **趋势回调**：上升趋势里 RSI 跌破 40 又站回 40。**突破**：收盘创 55 日新高且放量、在 100 日线上。**财报动量**：财报反应日涨 ≥ 3% 且超预期。"
-            "**超跌反弹**：RSI < 30 或跌破布林下轨、比 20 日高点跌 8% 以上，且今天止跌。**底部回升**：跌深、低点抬高、突破近 10 日高、收复 20 日线。\n"
+            "**超跌反弹**：RSI < 30 或跌破布林下轨、比 20 日高点跌 8% 以上，且今天止跌。**底部回升**：跌深、低点抬高、突破近 10 日高、收复 20 日线。**W双底**：两个等高低点（±3%、间隔 15~60 天）、颈线高出低点 5% 以上，收盘突破颈线那天。\n"
             "- **趋势**：收盘与 50 / 200 日线的关系。**RSI14**：14 日相对强弱，30 以下超卖、70 以上超买。**距55高**：现价相对过去 55 根 bar 最高收盘。\n"
             "- 全部只用已走完的 bar，按规则计算，不看任何账户持仓，也不是预测。"
         )
@@ -1150,7 +1150,7 @@ with tab_pos:
                                      column_config={"区间%": st.column_config.NumberColumn(format="%+.1f%%"), "持有bar": st.column_config.NumberColumn(format="%d")})
                     else:
                         st.caption("无")
-            st.caption("入场价和浮动按决策口径：信号 bar 的收盘价；实际成交在下一根开盘。分数是策略的排序依据（趋势回调 / 突破 / 底部回升 = 动量，超跌反弹 = 偏离均线的 ATR 倍数，财报动量 = 反应日涨幅）。")
+            st.caption("入场价和浮动按决策口径：信号 bar 的收盘价；实际成交在下一根开盘。分数是策略的排序依据（趋势回调 / 突破 / 底部回升 = 动量，超跌反弹 = 偏离均线的 ATR 倍数，财报动量 = 反应日涨幅，W双底 = 颈线相对低点的高度）。")
         except Exception as e:
             st.error(f"策略仓位失败：{e}")
 
@@ -1769,6 +1769,19 @@ def bottom_chart(sym: str, df: pd.DataFrame, res: dict, p: BottomParams):
     neck = res.get("_neckline")
     if neck is not None and not (isinstance(neck, float) and np.isnan(neck)):
         fig.add_hline(y=neck, line=dict(color="#7c3aed", width=1.2, dash="dash"), annotation_text=f"颈线 {neck:.2f}", annotation_position="top left", row=1, col=1)
+    wp = res.get("_W")
+    if wp:
+        off = len(df) - len(w)
+        pts = [(wp["L0"], w["low"].iloc[wp["L0"] - off] if wp["L0"] >= off else None, "W1"),
+               (wp["peak_i"], w["high"].iloc[wp["peak_i"] - off] if wp["peak_i"] >= off else None, "颈线"),
+               (wp["L1"], w["low"].iloc[wp["L1"] - off] if wp["L1"] >= off else None, "W2")]
+        if wp.get("breakout_i") is not None and wp["breakout_i"] >= off:
+            pts.append((wp["breakout_i"], w["close"].iloc[wp["breakout_i"] - off], "突破"))
+        pts = [t for t in pts if t[1] is not None]
+        if len(pts) >= 2:
+            fig.add_trace(go.Scatter(x=[w.index[i - off] for i, _, _ in pts], y=[y for _, y, _ in pts], mode="lines+markers+text",
+                                     text=[lab for _, _, lab in pts], textposition=["bottom center", "top center", "bottom center", "top right"][:len(pts)],
+                                     line=dict(color="#0891b2", width=2, dash="dot"), marker=dict(size=9, color="#0891b2"), name=f"W双底 · {res.get('W双底', '')}"), 1, 1)
     colors = ["#16a34a" if c >= o else "#dc2626" for c, o in zip(w["close"], w["open"])]
     fig.add_trace(go.Bar(x=w.index, y=w["volume"], name="成交量", marker_color=colors, opacity=0.6), 2, 1)
     fig.add_trace(go.Scatter(x=w.index, y=df["volume"].rolling(20).mean().reindex(w.index), name="20日均量", line=dict(color="#6b7280", width=1)), 2, 1)
@@ -1807,17 +1820,21 @@ with tab_bottom:
             if tbl_b.empty:
                 st.caption("没有符合所选阶段的标的。")
             else:
-                cols_b = ["标的", "板块", "阶段", "得分", "现价", "跌幅%", "低点日", "低点价", "前低价", "低点抬高", "颈线", "突破颈线", "距颈线%",
-                          "收复SMA20", "量能", "量比", "RSI背离", "RSI", "距低点%", "低点距今"]
+                cols_b = ["标的", "板块", "阶段", "得分", "W双底", "现价", "跌幅%", "低点日", "低点价", "前低价", "低点抬高", "颈线", "突破颈线", "距颈线%",
+                          "W低点差%", "W间隔", "收复SMA20", "量能", "量比", "RSI背离", "RSI", "距低点%", "低点距今"]
                 show_b = tbl_b[[c for c in cols_b if c in tbl_b.columns]].reset_index(drop=True)
                 tick = lambda v: "color:#15803d;font-weight:700" if v == "✓" else ("color:#b91c1c" if v == "✗" else ("color:#b45309" if v == "回踩" else ""))
                 stage_style = lambda v: ("color:#15803d;font-weight:700" if isinstance(v, str) and v.startswith("确认") else
                                          ("color:#b45309;font-weight:600" if v == "初步企稳" else ("color:#b91c1c" if v == "跌破低点" else "")))
-                styler_b = show_b.style.map(tick, subset=[c for c in ["低点抬高", "突破颈线", "收复SMA20", "量能", "RSI背离"] if c in show_b.columns]).map(stage_style, subset=["阶段"])
+                w_style = lambda v: ("color:#15803d;font-weight:700" if v == "已突破" else ("color:#b45309;font-weight:600" if v in ("形成中", "待确认", "突破后回落") else ("color:#b91c1c" if v in ("失效", "过期") else "color:#9ca3af")))
+                styler_b = show_b.style.map(tick, subset=[c for c in ["低点抬高", "突破颈线", "收复SMA20", "量能", "RSI背离"] if c in show_b.columns]).map(stage_style, subset=["阶段"]).map(w_style, subset=["W双底"])
                 ev_b = st.dataframe(styler_b, hide_index=True, width="stretch", height=min(42 + 35 * len(show_b), 700),
                                     on_select="rerun", selection_mode="single-row", key=f"bottom_tbl_v{st.session_state.get('tbl_version', 0)}",
                                     column_config={
                                         "得分": st.column_config.ProgressColumn(min_value=0, max_value=6, format="%d/6", help="六条规则满足的条数"),
+                                        "W双底": st.column_config.TextColumn(width="small", help="机械定义的 W 双底：两个等高低点（±3%）、间隔 15~60 bar、颈线高出低点 ≥ 5%。形成中 = 等收盘突破颈线；已突破 = 收盘已站上颈线；失效 = 跌破第二低点；过期 = 第二低点后 40 bar 内没突破"),
+                                        "W低点差%": st.column_config.NumberColumn(format="%+.1f%%", help="第二低点相对第一低点的价差"),
+                                        "W间隔": st.column_config.NumberColumn(format="%d bar", help="两个低点之间的 bar 数"),
                                         "跌幅%": st.column_config.NumberColumn(format="%.1f%%", help="最近低点相对之前最高价的跌幅"),
                                         "距颈线%": st.column_config.NumberColumn(format="%+.1f%%"),
                                         "距低点%": st.column_config.NumberColumn(format="%+.1f%%"),
@@ -1833,6 +1850,7 @@ with tab_bottom:
                 st.plotly_chart(bottom_chart(sel_sym, daily_b[sel_sym], res_b, bp), width="stretch", config=PLOTLY_CONFIG)
                 c_b1, c_b2 = st.columns([3, 1])
                 c_b1.caption("点表格任意一行切换图。规则：前期跌幅 ≥ 阈值 → 低点抬高 → 收盘突破两个低点之间的颈线 → 收复 SMA20 且均线拐头 → 突破日放量 → RSI 底背离或回到 50 上方。"
+                             "“W双底”列是单独的形态识别（青色虚线），和上面六条规则独立；它作为策略 double_bottom 也在信号页和信号验证页里，胜率自己去矩阵里核对。"
                              "“确认后回踩”= 曾突破颈线、现在回落到颈线下方但仍在 SMA20 附近。最后 k 根 bar 的低点还无法确认，所以刚见底的股票会晚几天才出现。")
                 if c_b2.button("打开详情", key="bottom_detail"):
                     request_detail(sel_sym)

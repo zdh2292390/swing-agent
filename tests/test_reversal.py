@@ -50,3 +50,32 @@ def test_bottom_recovery_enters_after_w_bottom_breakout():
 def test_downtrend_generates_no_recovery_entry():
     df = _df(np.linspace(150, 90, 90))
     assert not BottomRecovery(swing_k=3).compute("X", df)["entry"].any()
+
+
+def test_double_bottom_enters_on_neckline_breakout_only_after_second_low_confirmed():
+    from tradebot.strategies import DoubleBottom
+    from tradebot.strategies.reversal import find_double_bottoms
+    down = np.linspace(140, 100, 30)          # 跌 29%
+    up1 = np.linspace(100, 110, 10)           # 反弹到 110（颈线）
+    down2 = np.linspace(110, 101, 10)         # 回到 101（第二低点，差 1%）
+    up2 = np.linspace(101, 109, 8)            # 颈线下方磨
+    brk = np.linspace(109, 120, 10)           # 突破颈线
+    df = _df(np.r_[down, up1, down2, up2, brk])
+    pats = find_double_bottoms(df, swing_k=3, min_gap=10)
+    assert len(pats) == 1
+    p = pats[0]
+    assert p["L0"] == len(down) - 1 and p["L1"] == len(down) + len(up1) + len(down2) - 1
+    assert p["breakout_i"] is not None and p["breakout_i"] >= p["confirm_i"]
+    assert df["close"].iloc[p["breakout_i"]] > p["neckline"] and df["close"].iloc[p["breakout_i"] - 1] <= p["neckline"]
+    strat = DoubleBottom(swing_k=3, min_gap=10)
+    sig = strat.compute("X", df)
+    assert sig["entry"].sum() == 1 and sig.index[sig["entry"]][0] == df.index[p["breakout_i"]]
+    res = run_backtest({"X": df}, strat, slippage_bps=0)
+    assert res.weights["X"].iloc[-1] > 0
+
+
+def test_double_bottom_rejects_unequal_lows_and_downtrend():
+    from tradebot.strategies.reversal import find_double_bottoms
+    down = np.linspace(140, 100, 30); up1 = np.linspace(100, 110, 10); down2 = np.linspace(110, 92, 10); up2 = np.linspace(92, 115, 15)
+    assert find_double_bottoms(_df(np.r_[down, up1, down2, up2]), swing_k=3, min_gap=10) == []   # 第二低点低了 8%，不是 W
+    assert find_double_bottoms(_df(np.linspace(150, 90, 90)), swing_k=3) == []
