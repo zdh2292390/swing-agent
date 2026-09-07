@@ -536,8 +536,11 @@ def cached_upcoming_earnings(symbols: tuple[str, ...], groups_key: str) -> pd.Da
 
 
 STRAT_COLOR = {"trend_pullback": "#2563eb", "breakout": "#7c3aed", "post_earnings": "#f59e0b", "oversold_bounce": "#0891b2",
-               "bottom_recovery": "#16a34a", "double_bottom": "#0891b2", "relative_momentum": "#db2777", "high52_breakout": "#b45309", "main_wave": "#dc2626",
+               "bottom_recovery": "#16a34a", "double_bottom": "#0f766e", "relative_momentum": "#db2777", "high52_breakout": "#b45309", "main_wave": "#dc2626",
                "ma_cross": "#6b7280", "buy_and_hold": "#9ca3af"}
+
+# 多标的对比用的分类色板：色相拉开，深浅交替，深浅主题下都能分辨
+SYM_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed", "#0891b2", "#db2777", "#65a30d", "#b45309", "#0f766e", "#4338ca", "#9333ea"]
 
 
 def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 560,
@@ -2486,21 +2489,113 @@ with tab_log:
 
 
 # ================= 行情 =================
+def build_compare_fig(syms: tuple[str, ...], interval: str, days: int, height: int = 420, log_scale: bool = False):
+    """多标的归一化对比：全部标的在共同起点那天 = 100，比的是区间内相对涨跌。"""
+    data = load_data(tuple(syms), interval, default_days(interval))
+    series, first_dates = {}, []
+    for sym in syms:
+        full = data.get(sym)
+        if full is None or full.empty:
+            continue
+        w = full[full.index >= full.index[-1] - pd.Timedelta(days=days)]["close"].dropna()
+        if len(w) < 2:
+            continue
+        series[sym] = w
+        first_dates.append(w.index[0])
+    if len(series) < 2:
+        return None, pd.DataFrame(), ""
+    base_date = max(first_dates)          # 共同起点：最晚上市 / 最晚有数据的那只决定
+    fig = go.Figure()
+    rows = []
+    for sym, w in series.items():
+        w = w[w.index >= base_date]
+        if w.empty or w.iloc[0] == 0:
+            continue
+        norm = w / w.iloc[0] * 100
+        color = SYM_COLORS[list(series).index(sym) % len(SYM_COLORS)]
+        fig.add_trace(go.Scatter(x=norm.index, y=norm, name=sym, line=dict(color=color, width=1.8),
+                                 hovertemplate=f"{sym} %{{x|%Y-%m-%d}}<br>%{{y:.1f}}（起点 100）<extra></extra>"))
+        rows.append({"标的": sym, "板块": "/".join(S.watchlist.group_of(sym)), "起点价": round(float(w.iloc[0]), 2),
+                     "现价": round(float(w.iloc[-1]), 2), "区间%": round(float(norm.iloc[-1]) - 100, 1),
+                     "区间最高%": round(float(norm.max()) - 100, 1), "区间最低%": round(float(norm.min()) - 100, 1)})
+    fig.add_hline(y=100, line=dict(color="#9ca3af", width=1, dash="dot"))
+    fig.update_layout(template=TEMPLATE, height=height, margin=dict(l=40, r=20, t=10, b=30),
+                      legend=dict(orientation="h", y=1.08, font=dict(size=10)), yaxis_title="归一化（起点 = 100）")
+    if log_scale:  # 有一只涨了好几倍时，线性轴会把其他线压平
+        fig.update_yaxes(type="log", tickvals=[25, 50, 100, 200, 400, 800, 1600, 3200])
+    breaks = [dict(bounds=["sat", "mon"])]
+    if interval == "1h":
+        breaks.append(dict(bounds=[16, 9.5], pattern="hour"))
+    fig.update_xaxes(rangebreaks=breaks)
+    tbl = pd.DataFrame(rows).sort_values("区间%", ascending=False).reset_index(drop=True)
+    late = [s for s, w in series.items() if w.index[0] > base_date - pd.Timedelta(days=3)] if base_date > min(first_dates) else []
+    note = f"共同起点 {base_date:%Y-%m-%d}（{'、'.join(late)} 的数据最晚，对比区间跟着它截断）" if late else f"共同起点 {base_date:%Y-%m-%d}"
+    return fig, tbl, note
+
+
 with tab_data:
-    c1, c2, c3, c5 = st.columns([1.4, 1, 2.4, 0.7])
-    sym = c1.selectbox("标的", S.symbols, format_func=lambda x: f"{x}{(' ' + display_name(x)) if display_name(x) else ''} · {'/'.join(S.watchlist.group_of(x))}")
+    c1, c2, c3 = st.columns([3, 1, 1.8])
+    default_syms = [x for x in st.session_state.get("data_symbols", S.symbols[:1]) if x in S.symbols] or S.symbols[:1]
+    # “加入该板块”按钮在 multiselect 之后，Streamlit 不允许那时改它的 session_state，所以按钮只记一个待办，下一轮在这里合并
+    add_req = st.session_state.pop("data_add_pending", None)
+    if add_req:
+        default_syms = list(dict.fromkeys(default_syms + [x for x in S.watchlist.groups.get(add_req, []) if x in S.symbols]))
+        st.session_state["data_symbols"] = default_syms
+    syms_d = c1.multiselect("标的（可多选，下面每只一张图）", S.symbols, default=default_syms, key="data_symbols",
+                            format_func=lambda x: f"{x}{(' ' + display_name(x)) if display_name(x) else ''} · {'/'.join(S.watchlist.group_of(x))}")
     d_interval = c2.radio("周期", ["1d", "1h"], index=0 if S.interval == "1d" else 1, horizontal=True, key="data_interval")
     days_d = c3.slider("显示天数", 5, MAX_DAYS[d_interval], 365 if d_interval == "1d" else 60, key=f"data_days_{d_interval}")
-    c5.markdown("<div style='height:1.9em'></div>", unsafe_allow_html=True)
-    if c5.button("详情", key="chart_detail_btn"):
-        request_detail(sym)
+    g1, g2, g3, g4, g5 = st.columns([1.1, 1.1, 1.1, 1.7, 0.9])
+    pick_group = g1.selectbox("按板块添加", ["—"] + [g for g in S.watchlist.groups if S.watchlist.enabled.get(g, True)], key="data_group_add")
+    if g2.button("加入该板块", key="data_add_group", disabled=pick_group == "—"):
+        st.session_state["data_add_pending"] = pick_group
+        st.rerun()
+    per_row = g3.radio("每行几张", [1, 2], index=1 if len(syms_d) > 2 else 0, horizontal=True, key="data_per_row")
+    show_cmp = g4.checkbox("先看归一化对比图（起点 = 100）", value=True, key="data_compare",
+                           help="把所有选中的标的放在一张图里，共同起点归一到 100，比的是相对涨跌，不受股价高低影响")
+    log_cmp = g5.checkbox("对数刻度", value=False, key="data_compare_log",
+                          help="其中一只涨了好几倍时，线性轴会把其他线压平；对数轴上相同的涨幅比例是相同的斜率")
     ovs_d, raw_d, trades_d, hold_d = overlay_controls("chart")
-    try:
-        fig, df, note = build_price_fig(sym, d_interval, days_d, ovs_d, show_raw=raw_d, show_trades=trades_d, show_holding=hold_d)
-        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
-        st.caption(f"{len(df)} 根 {d_interval} bar · {df.index[0]:%Y-%m-%d} 至 {df.index[-1]:%Y-%m-%d %H:%M} · 时区 {NY}" + note)
-    except Exception as e:
-        st.error(f"读取行情失败：{e}")
+    if not syms_d:
+        st.info("先选至少一个标的。")
+    else:
+        if len(syms_d) > 8:
+            st.caption(f"选了 {len(syms_d)} 只，图多会慢一点。")
+        if show_cmp and len(syms_d) > 1:
+            section_header("归一化对比", [(f"{len(syms_d)} 只", ""), (f"{days_d} 天", "")])
+            try:
+                fig_c, tbl_c, note_c = build_compare_fig(tuple(syms_d), d_interval, days_d, log_scale=log_cmp)
+                if fig_c is None:
+                    st.caption("可对比的数据不足（至少要两只在这个区间里都有数据）。")
+                else:
+                    cc1, cc2 = st.columns([2.4, 1], gap="large")
+                    cc1.plotly_chart(fig_c, width="stretch", config=PLOTLY_CONFIG)
+                    with cc2:
+                        st.dataframe(tbl_c.style.map(lambda v: "color:#15803d;font-weight:600" if isinstance(v, float) and v > 0 else ("color:#b91c1c" if isinstance(v, float) and v < 0 else ""),
+                                                     subset=[c for c in tbl_c.columns if "%" in c]),
+                                     hide_index=True, width="stretch", height=min(42 + 35 * len(tbl_c), 420),
+                                     column_config={c: st.column_config.NumberColumn(format="%+.1f%%") for c in tbl_c.columns if "%" in c}
+                                     | {"起点价": st.column_config.NumberColumn(format="%.2f"), "现价": st.column_config.NumberColumn(format="%.2f")})
+                    st.caption(f"{note_c}。区间% = 现价相对共同起点的涨跌；不含股息。这是历史走势对比，不是排名推荐。")
+            except Exception as e:
+                st.error(f"对比图失败：{e}")
+        section_header("逐只走势", [(f"{len(syms_d)} 张图", ""), (d_interval, "")])
+        h_each = 520 if per_row == 1 else 400
+        for i in range(0, len(syms_d), per_row):
+            chunk = syms_d[i:i + per_row]
+            cols_row = st.columns(len(chunk), gap="large")
+            for col, sym in zip(cols_row, chunk):
+                with col:
+                    t1, t2 = st.columns([3, 1])
+                    t1.markdown(f"**{sym}**{(' · ' + display_name(sym)) if display_name(sym) else ''} · {'/'.join(S.watchlist.group_of(sym))}")
+                    if t2.button("详情", key=f"chart_detail_{sym}"):
+                        request_detail(sym)
+                    try:
+                        fig, df, note = build_price_fig(sym, d_interval, days_d, ovs_d, height=h_each, show_raw=raw_d, show_trades=trades_d, show_holding=hold_d)
+                        st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=f"chart_fig_{sym}")
+                        st.caption(f"{len(df)} 根 {d_interval} bar · {df.index[0]:%Y-%m-%d} 至 {df.index[-1]:%Y-%m-%d %H:%M} · 时区 {NY}" + (note if per_row == 1 else ""))
+                    except Exception as e:
+                        st.error(f"{sym} 读取行情失败：{e}")
 
 
 # ================= 详情弹窗（全局唯一，任何页签请求后在这里打开） =================
@@ -2573,6 +2668,7 @@ with tab_help:
         "- **LEAP Call**：按目标 delta 选行权；杠杆 = delta × 现价 / 权利金；隐含胜率 = Black-Scholes 下到期价 > 盈亏平衡的概率；历史胜率 = 历史同长度持有期涨幅 ≥ 需涨幅的比例（重叠窗口、偏乐观）；年化成本 = 时间价值 / 现价 / 年数。\n"
         "- **底部确认**：六条规则各一分：前期跌幅 ≥ 阈值、低点抬高、突破颈线、收复 SMA20 且拐头、突破日放量、RSI 底背离或 > 50；阶段 = 确认 / 确认后回踩 / 初步企稳 / 未见底 / 跌破低点 / 无明显下跌。\n"
         "- **板块轮动**：RS 比率 = 100 × (价格/基准) / 其 63 日均值；RS 动量 = 100 × RS 比率 / 10 日前值；象限：领先(>100,>100)、走弱(>100,<100)、落后(<100,<100)、改善(<100,>100)。\n"
-        "- **大盘宏观**：指数用指数本身（^GSPC、^NDX、^DJI、^RUT），不是 ETF；事件日历来自美联储 / BEA / 普查局官网与 BLS 日程，ISM 等按惯例推算。"
+        "- **大盘宏观**：指数用指数本身（^GSPC、^NDX、^DJI、^RUT），不是 ETF；事件日历来自美联储 / BEA / 普查局官网与 BLS 日程，ISM 等按惯例推算。\n"
+        "- **行情**：可以多选标的，下面每只一张 K 线图（每行 1 或 2 张）；归一化对比图把所有选中标的在共同起点归一到 100，共同起点取最晚有数据的那只，所以选了新上市的股票会截短对比区间；区间% 不含股息。"
     )
     st.caption("以上全部是规则与历史统计的说明，不构成任何投资建议。")
