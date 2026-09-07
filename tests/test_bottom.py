@@ -76,3 +76,30 @@ def test_low_support_lines_handles_short_data():
     import numpy as np
     from tradebot.bottom import low_support_lines
     assert low_support_lines(_df(np.array([100.0])), months=6) == []
+
+
+def test_price_position_counts_days_below():
+    import numpy as np
+    from tradebot.bottom import price_position
+    df = _df(np.arange(1, 101, dtype=float))          # 单调上升，最后一天最高
+    p = price_position(df, months=12)
+    assert p["交易日"] == 100 and p["低于天数"] == 99
+    assert abs(p["低于天数%"] - 99.0) < 1e-9
+    assert p["区间位置%"] > 99                          # 也在区间顶部
+    assert p["昨天低于天数%"] is not None and abs(p["昨天低于天数%"] - 98 / 99 * 100) < 1e-9
+
+
+def test_price_position_middle_and_custom_price():
+    import numpy as np
+    from tradebot.bottom import price_position
+    df = _df(np.r_[np.arange(1, 51, dtype=float), np.arange(50, 0, -1, dtype=float)])   # 上去又下来，收在 1
+    p = price_position(df, months=12)
+    assert p["低于天数%"] == 0.0                        # 收在最低，没有哪天比它更低
+    p2 = price_position(df, months=12, price=25.0)      # 换个参考价：上下各有约一半的天数低于 25
+    assert 45 < p2["低于天数%"] < 55 and p2["参考价"] == 25.0
+
+
+def test_price_position_needs_enough_bars():
+    import numpy as np
+    from tradebot.bottom import price_position
+    assert price_position(_df(np.arange(1, 4, dtype=float)), months=6) == {}

@@ -32,7 +32,7 @@ from tradebot.econ_calendar import market_session_open, sync_official_events
 from tradebot.macro import EVENT_COLUMNS, compute_snapshot, load_manual_events, macro_closes, market_history, save_manual_events, upcoming_earnings, upcoming_events
 from tradebot.news import fetch_info, fetch_news, format_info
 from tradebot.options import build_odte_table, fetch_chain_summary, macro_in_window
-from tradebot.bottom import BottomParams, analyze_bottom, build_bottom_table, low_support_lines
+from tradebot.bottom import BottomParams, analyze_bottom, build_bottom_table, low_support_lines, price_position
 from tradebot.leaps import bs_price_path, build_leap_table, fetch_leap_candidates, fetch_option_history, implied_vol_series, iv_stats, payoff_curve
 from tradebot.iv import hv30, iv30_snapshot, iv_rank_percentile, load_history as load_iv_history
 from tradebot.rotation import BENCHMARKS, KIND, NAME, basket_index, group_breadth, monthly_returns, relative_strength_table, rotation_closes, rrg_tail
@@ -319,6 +319,7 @@ def compute_signals(symbols: tuple[str, ...], groups_key: str, interval: str, da
 
         lo2, hi2 = lo_hi(61)
         lo5, hi5 = lo_hi(152)
+        pos6 = price_position(df, months=6)
         s50, s200 = sma(c, 50).iloc[-1], sma(c, 200).iloc[-1]
         if px > s200 and s50 > s200:
             trend = "↑ 多头"
@@ -336,6 +337,7 @@ def compute_signals(symbols: tuple[str, ...], groups_key: str, interval: str, da
             "趋势": trend, "RSI14": float(rsi(c, 14).iloc[-1]),
             "距55高": (px / float(rolling_max_prev(c, 55).iloc[-1]) - 1) * 100,
             "2月最低": round(lo2, 2), "2月最高": round(hi2, 2), "5月最低": round(lo5, 2), "5月最高": round(hi5, 2),
+            "6月位置%": pos6.get("低于天数%"), "6月位置昨%": pos6.get("昨天低于天数%"), "6月区间位置%": pos6.get("区间位置%"),
             "ATR%": float(atr(df, 14).iloc[-1]) / px * 100,
             "财报": (nxt.strftime("%m-%d") + f"（{days_to}天）") if nxt is not None else "",
             "距财报天": days_to,
@@ -460,6 +462,10 @@ def render_signal_table(df: pd.DataFrame, strat_cols: list[str], unit: str, hide
             "5月最低": st.column_config.NumberColumn(format="%.2f", help="最近 152 个日历日内 bar 的最低价"),
             "5月最高": st.column_config.NumberColumn(format="%.2f", help="最近 152 个日历日内 bar 的最高价"),
             "距55高": st.column_config.NumberColumn(format="%.1f%%"),
+            "6月位置%": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f%%", width="small",
+                                                     help="现价比最近 6 个月里百分之多少的交易日都高（按收盘价的天数占比）。90% 以上 = 只有一成的日子比现在贵；10% 以下 = 九成的日子都比现在贵"),
+            "6月位置昨%": st.column_config.NumberColumn(format="%.0f%%", width="small", help="前一根 bar 的同一个数（窗口也往前挪一根），用来看位置是升还是降"),
+            "6月区间位置%": st.column_config.NumberColumn(format="%.0f%%", width="small", help="现价在 6 个月最低价~最高价区间里的位置，用的是 bar 的最高最低价，和按天数算的口径不同"),
             "ATR%": st.column_config.NumberColumn(format="%.2f%%"),
             "RSI14": st.column_config.ProgressColumn(min_value=0, max_value=100, format="%.0f", width="small"),
             "现价": st.column_config.NumberColumn(format="%.2f", width="small"),
@@ -618,6 +624,34 @@ def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 
     return fig, df, ("  · " + "  · ".join(notes)) if notes else ""
 
 
+def position_bar(sym: str, interval: str, months: int = 6, price: float | None = None) -> None:
+    """一行"6个月位置"：低于它的交易日占比 + 区间位置 + 昨天的同一个数，配一条带标记的横条。"""
+    try:
+        full = load_data((sym,), interval, default_days(interval))[sym]
+        pos = price_position(full, months=months, price=price)
+    except Exception:
+        return
+    if not pos:
+        return
+    pct, rng = pos["低于天数%"], pos["区间位置%"]
+    mark = min(max(pct, 1.0), 99.0)
+    prev = pos["昨天低于天数%"]
+    delta = f"，昨天 {prev:.0f}%" if prev is not None else ""
+    tone = "#b91c1c" if pct >= 80 else ("#15803d" if pct <= 20 else "#b45309")
+    st.markdown(
+        f"<div style='margin:0 0 10px'>"
+        f"<div style='display:flex;justify-content:space-between;font-size:11.5px;color:var(--tb-muted);gap:8px'>"
+        f"<span>低 {pos['最低价']:.2f}</span>"
+        f"<span style='color:{tone}'><b>{months}个月位置：高于 {pct:.0f}% 的交易日</b>"
+        f"（{pos['交易日']} 天里 {pos['低于天数']} 天收得比 {pos['参考价']:.2f} 低{delta}）· 区间位置 {rng:.0f}%</span>"
+        f"<span>高 {pos['最高价']:.2f}</span></div>"
+        f"<div style='position:relative;height:8px;border-radius:4px;margin-top:4px;"
+        f"background:linear-gradient(90deg,rgba(37,99,235,.30),rgba(245,158,11,.30),rgba(220,38,38,.34))'>"
+        f"<div style='position:absolute;left:50%;top:0;width:1px;height:8px;background:var(--tb-border)'></div>"
+        f"<div style='position:absolute;left:{mark:.1f}%;top:-3px;width:2px;height:14px;background:currentColor;border-radius:1px'></div>"
+        f"</div></div>", unsafe_allow_html=True)
+
+
 def overlay_controls(prefix: str, compact: bool = False):
     """叠加哪些策略 + 显示什么。选择记在会话里，切换标的时保持。"""
     default = [S.strategy] if S.strategy in SWING_NAMES else []
@@ -762,6 +796,7 @@ def show_detail(sym: str, row: dict | None) -> None:
                 st.write(info["longBusinessSummary"])
     with t3:
         ovs, show_raw, show_trades, show_holding, low_m = overlay_controls("detail")
+        position_bar(sym, S.interval)
         days_ov = st.select_slider("显示区间", options=[90, 180, 365, 730], value=180 if S.interval == "1d" else 90, key="detail_days",
                                    format_func=lambda d: f"{d} 天")
         try:
@@ -1030,10 +1065,10 @@ with tab_sig:
             pick_groups = f1.multiselect("板块", active_groups, default=default_groups, key="sig_groups")
             only_sig = f2.checkbox("只看有信号", value=False, key="sig_only")
             show_exit = f3.checkbox("显示出场条件", value=False, key="sig_exit", help="▼ = 今天满足该策略的出场条件（不考虑是否持有）")
-            sort_opts = ["标的", "共振", f"涨跌1{unit}", f"涨跌5{unit}", f"涨跌20{unit}", "RSI14", "距55高", "距财报天", "2月最低", "2月最高", "5月最低", "5月最高"]
+            sort_opts = ["标的", "共振", f"涨跌1{unit}", f"涨跌5{unit}", f"涨跌20{unit}", "RSI14", "距55高", "6月位置%", "距财报天", "2月最低", "2月最高", "5月最低", "5月最高"]
             sort_col = f4.selectbox("排序", sort_opts, index=1, key="sig_sort")
             desc = f5.checkbox("降序", value=True, key="sig_desc")
-            more_cols = f6.checkbox("更多列", value=False, key="sig_more", help="市场、组、最新价、盘中%、ATR%")
+            more_cols = f6.checkbox("更多列", value=False, key="sig_more", help="市场、组、最新价、盘中%、ATR%、6月位置的昨日值与区间口径")
 
             view = table[table["标的"].isin({s_ for g in pick_groups for s_ in wl.groups[g]})].copy()
             for lab in strat_cols:  # 出场条件叠加显示
@@ -1044,11 +1079,11 @@ with tab_sig:
                 view = view[(view[strat_cols] != "").any(axis=1)]
             view = view.sort_values(sort_col, ascending=not desc, na_position="last")
 
-            base_cols = ["标的", "现价", f"涨跌1{unit}", f"涨跌5{unit}", f"涨跌20{unit}", "趋势", "阶段", "RSI14", "距55高",
+            base_cols = ["标的", "现价", f"涨跌1{unit}", f"涨跌5{unit}", f"涨跌20{unit}", "趋势", "阶段", "RSI14", "距55高", "6月位置%",
                          "2月最低", "2月最高", "5月最低", "5月最高", "财报"]
             if more_cols:
                 base_cols = ["标的", "市场", "组", "现价", "最新价", "盘中%", f"涨跌1{unit}", f"涨跌5{unit}", f"涨跌20{unit}", "趋势", "阶段", "RSI14", "距55高", "ATR%",
-                             "2月最低", "2月最高", "5月最低", "5月最高", "财报"]
+                             "6月位置%", "6月位置昨%", "6月区间位置%", "2月最低", "2月最高", "5月最低", "5月最高", "财报"]
             show_cols = base_cols + ["共振"] + strat_cols
 
             st.caption("点任意一行打开该标的的详情：催化剂、基本面、走势、新闻。")
@@ -2605,6 +2640,7 @@ with tab_data:
                     t1.markdown(f"**{sym}**{(' · ' + display_name(sym)) if display_name(sym) else ''} · {'/'.join(S.watchlist.group_of(sym))}")
                     if t2.button("详情", key=f"chart_detail_{sym}"):
                         request_detail(sym)
+                    position_bar(sym, d_interval)
                     try:
                         fig, df, note = build_price_fig(sym, d_interval, days_d, ovs_d, height=h_each, show_raw=raw_d, show_trades=trades_d, show_holding=hold_d, low_months=low_d)
                         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=f"chart_fig_{sym}")
@@ -2645,6 +2681,7 @@ with tab_help:
         "| 距55高 | 现价相对过去 55 根 bar（不含当前）最高收盘的百分比，0 附近即接近突破位 |\n"
         "| 2月 / 5月 最低最高 | 最近 61 / 152 个日历日内 bar 的最低价与最高价 |\n"
         "| ATR% | 14 根 bar 平均真实波幅 / 现价，衡量日常波动大小（“更多列”里） |\n"
+        "| 6月位置% | 现价比最近 6 个月里百分之多少的交易日都高，按收盘价的天数占比算：90% 以上说明只有一成的日子比现在贵，10% 以下说明九成的日子都比现在贵。“更多列”里还有前一根 bar 的同一个数（看位置在升还是降）和按价格区间算的口径 |\n"
         "| 财报 | 下次财报日期与距今天数，来自 yfinance 财报日历 |\n"
         "| 市场 / 组 | 上市地（海外只监控不交易）与所属板块（“更多列”里） |"
     )
@@ -2685,6 +2722,9 @@ with tab_help:
         "- **板块轮动**：RS 比率 = 100 × (价格/基准) / 其 63 日均值；RS 动量 = 100 × RS 比率 / 10 日前值；象限：领先(>100,>100)、走弱(>100,<100)、落后(<100,<100)、改善(<100,>100)。\n"
         "- **大盘宏观**：指数用指数本身（^GSPC、^NDX、^DJI、^RUT），不是 ETF；事件日历来自美联储 / BEA / 普查局官网与 BLS 日程，ISM 等按惯例推算。\n"
         "- **行情**：可以多选标的，下面每只一张 K 线图（每行 1 或 2 张）；归一化对比图把所有选中标的在共同起点归一到 100，共同起点取最晚有数据的那只，所以选了新上市的股票会截短对比区间；区间% 不含股息。\n"
+        "- **6个月位置**（行情页每张图上方、详情弹窗、信号表的“6月位置%”列）：把最近 6 个月的收盘价按天数排队，看现价排在第几。"
+        "“高于 92% 的交易日”= 这 6 个月里 92% 的交易日收盘价比现价低。参考价用最后一根完整 bar 的收盘；括号里的“昨天”是前一根 bar 的同一个数，窗口也跟着往前挪一根。"
+        "另有“区间位置%”，算的是现价在 6 个月最低价到最高价之间的位置，用 bar 的最高最低价，和按天数的口径不同，两个数不一样是正常的。\n"
         "- **6个月低点线**（行情页和详情弹窗可勾）：红色虚线 = 最近 6 个月最低的那根 bar 的最低价；橙色点线 = 第二低，把最低那根 bar 前后各 10 根 bar 排除后剩下的最低价，也就是另一段独立探底的低点。菱形标在低点当天，悬停显示现价距该低点多少。两条线都用真实最低价，不做平滑，也不代表支撑一定有效。"
     )
     st.caption("以上全部是规则与历史统计的说明，不构成任何投资建议。")

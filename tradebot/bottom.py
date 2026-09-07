@@ -193,3 +193,39 @@ def low_support_lines(df: pd.DataFrame, months: int = 6, gap_bars: int = 10) -> 
         i2 = int(idx[np.argmin(vals[idx])])
         out.append({"标签": "第二低", "价格": float(vals[i2]), "日期": lows.index[i2], "距今bar": len(lows) - 1 - i2})
     return out
+
+
+def price_position(df: pd.DataFrame, months: int = 6, price: float | None = None) -> dict:
+    """参考价在最近 months 个月里的位置。两个口径分开算，别混着看：
+
+    低于天数%  = 窗口内收盘价严格低于参考价的交易日占比，也就是"现价比百分之多少的交易日都高"（按天数）
+    区间位置%  = (参考价 − 最低价) / (最高价 − 最低价)，用 bar 的最高最低价（按价格区间）
+    昨天低于天数% = 用截至前一根 bar 的同长度窗口、以前一根 bar 收盘价算的同一个数，用来看位置是升还是降。
+    参考价默认取最后一根 bar 的收盘价；传 price 可以换成盘中最新价。
+    数据不足返回 {}。
+    """
+    if df is None or df.empty or "close" not in df:
+        return {}
+    w = df[df.index >= df.index[-1] - pd.DateOffset(months=months)]
+    closes = w["close"].dropna()
+    if len(closes) < 5:
+        return {}
+    px = float(closes.iloc[-1] if price is None else price)
+    below = int((closes.values < px).sum())
+    lo, hi = float(w["low"].min()), float(w["high"].max())
+    span = hi - lo
+    prev_pct = None
+    if len(df) >= 2:
+        d_prev = df.iloc[:-1]
+        w_prev = d_prev[d_prev.index >= d_prev.index[-1] - pd.DateOffset(months=months)]
+        c_prev = w_prev["close"].dropna()
+        if len(c_prev) >= 5:
+            prev_pct = float((c_prev.values < float(c_prev.iloc[-1])).mean() * 100)
+    return {
+        "参考价": px, "交易日": int(len(closes)), "低于天数": below, "低于天数%": below / len(closes) * 100,
+        "区间位置%": (px - lo) / span * 100 if span > 0 else 50.0,
+        "最低价": lo, "最高价": hi, "中位价": float(closes.median()),
+        "距最低%": (px / lo - 1) * 100 if lo > 0 else float("nan"),
+        "距最高%": (px / hi - 1) * 100 if hi > 0 else float("nan"),
+        "昨天低于天数%": prev_pct,
+    }
