@@ -40,7 +40,7 @@ def test_exchange_suffix_is_kept_and_marked_foreign():
 
 
 def test_ai_infra_group():
-    assert GROUPS["ai_infra"] == ["CRWV"] and "CRWV" in expand("@ai_infra")
+    assert GROUPS["ai_infra"] == ["CRWV", "TTMI"] and set(expand("@ai_infra")) == {"CRWV", "TTMI"}
 
 
 def test_space_group():

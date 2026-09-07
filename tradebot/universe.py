@@ -9,7 +9,7 @@ GROUPS: dict[str, list[str]] = {
     "mag7": ["AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA"],
     "semis": ["NVDA", "AMD", "AVGO", "TSM", "ASML", "MU", "QCOM", "ARM", "AMAT", "LRCX", "KLAC", "INTC", "MRVL", "TXN"],
     "berkshire": ["BRK.B"],
-    "ai_infra": ["CRWV"],  # AI 基础设施 / 算力云：CoreWeave
+    "ai_infra": ["CRWV", "TTMI"],  # AI 基础设施：CoreWeave（算力云）、TTM Technologies（数据中心 / 航天军工 PCB）
     "space": ["RKLB"],  # 航天：Rocket Lab
     # 存储/内存：美光、西数、闪迪，DRAM = Roundhill Memory ETF；SK 海力士是韩国上市，只监控不交易
     "storage": ["MU", "WDC", "SNDK", "DRAM", "000660.KS"],
@@ -22,7 +22,8 @@ _YAHOO_REVERSE = {v: k for k, v in _YAHOO_OVERRIDES.items()}
 
 # 交易所后缀 -> 市场名。带这些后缀的是海外上市，只能监控，不能通过 Alpaca 交易
 EXCHANGE_SUFFIX = {"KS": "韩", "KQ": "韩", "T": "日", "HK": "港", "L": "英", "DE": "德", "PA": "法", "TW": "台", "SS": "沪", "SZ": "深"}
-DISPLAY_NAMES = {"005930.KS": "三星电子", "000660.KS": "SK海力士", "DRAM": "Roundhill 内存ETF", "CRWV": "CoreWeave", "RKLB": "Rocket Lab"}
+DISPLAY_NAMES = {"005930.KS": "三星电子", "000660.KS": "SK海力士", "DRAM": "Roundhill 内存ETF", "CRWV": "CoreWeave", "RKLB": "Rocket Lab",
+                 "TTMI": "TTM Technologies"}
 
 
 def _split_suffix(symbol: str) -> tuple[str, str]:
