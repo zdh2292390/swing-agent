@@ -606,12 +606,12 @@ def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 
         for ln, color, dash, pos in zip(low_support_lines(full, months=low_months),
                                         ("#b91c1c", "#b45309"), ("dash", "dot"), ("bottom left", "bottom right")):
             fig.add_hline(y=ln["价格"], line=dict(color=color, width=1.2, dash=dash), row=1, col=1,
-                          annotation_text=f"{ln['标签']} {ln['价格']:.2f}（{ln['日期']:%m-%d}）", annotation_position=pos,
+                          annotation_text=f"{ln['标签']} {fmt_px(ln['价格'])}（{ln['日期']:%m-%d}）", annotation_position=pos,
                           annotation_font=dict(size=10, color=color))
-            fig.add_trace(go.Scatter(x=[ln["日期"]], y=[ln["价格"]], mode="markers", name=f"{ln['标签']} {ln['价格']:.2f}",
+            fig.add_trace(go.Scatter(x=[ln["日期"]], y=[ln["价格"]], mode="markers", name=f"{ln['标签']} {fmt_px(ln['价格'])}",
                                      marker=dict(symbol="diamond", size=9, color=color, line=dict(color="white", width=1)),
-                                     hovertemplate=f"{ln['标签']} {ln['价格']:.2f}<br>%{{x|%Y-%m-%d}}<br>现价距此 {px_now / ln['价格'] - 1:+.1%}<extra></extra>"), 1, 1)
-        lows_txt = "、".join(f"{l['标签']} {l['价格']:.2f}（{l['日期']:%Y-%m-%d}，现价 {px_now / l['价格'] - 1:+.1%}）" for l in low_support_lines(full, months=low_months))
+                                     hovertemplate=f"{ln['标签']} {fmt_px(ln['价格'])}<br>%{{x|%Y-%m-%d}}<br>现价距此 {px_now / ln['价格'] - 1:+.1%}<extra></extra>"), 1, 1)
+        lows_txt = "、".join(f"{l['标签']} {fmt_px(l['价格'])}（{l['日期']:%Y-%m-%d}，现价 {px_now / l['价格'] - 1:+.1%}）" for l in low_support_lines(full, months=low_months))
         if lows_txt:
             notes.append(f"低点线：{lows_txt}。第二低 = 把最低那根 bar 前后各 10 根排除后剩下的最低价，也就是另一段独立探底的低点。")
     fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="成交量", marker_color="#9ca3af"), 2, 1)
@@ -622,6 +622,21 @@ def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 
         breaks.append(dict(bounds=[16, 9.5], pattern="hour"))
     fig.update_xaxes(rangebreaks=breaks)
     return fig, df, ("  · " + "  · ".join(notes)) if notes else ""
+
+
+def fmt_px(v: float) -> str:
+    """价格显示：上万就不要小数了（韩股按韩元报价，几百万带两位小数只是噪音）。"""
+    try:
+        return f"{v:,.0f}" if abs(float(v)) >= 10_000 else f"{float(v):,.2f}"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def view_default_symbols() -> list[str]:
+    """.env 的 VIEW_GROUPS 里那些板块的标的，行情页默认就选这些；配置为空或都不匹配时退回第一只。"""
+    gs = [g for g in S.watchlist.groups if S.watchlist.enabled.get(g, True) and (not S.view_groups or g.lower() in S.view_groups)]
+    out = [x for g in gs for x in S.watchlist.groups[g] if x in S.symbols]
+    return list(dict.fromkeys(out)) or S.symbols[:1]
 
 
 def position_bar(sym: str, interval: str, months: int = 6, price: float | None = None) -> None:
@@ -641,10 +656,10 @@ def position_bar(sym: str, interval: str, months: int = 6, price: float | None =
     st.markdown(
         f"<div style='margin:0 0 10px'>"
         f"<div style='display:flex;justify-content:space-between;font-size:11.5px;color:var(--tb-muted);gap:8px'>"
-        f"<span>低 {pos['最低价']:.2f}</span>"
+        f"<span>低 {fmt_px(pos['最低价'])}</span>"
         f"<span style='color:{tone}'><b>{months}个月位置：高于 {pct:.0f}% 的交易日</b>"
-        f"（{pos['交易日']} 天里 {pos['低于天数']} 天收得比 {pos['参考价']:.2f} 低{delta}）· 区间位置 {rng:.0f}%</span>"
-        f"<span>高 {pos['最高价']:.2f}</span></div>"
+        f"（{pos['低于天数']}/{pos['交易日']} 天低于 {fmt_px(pos['参考价'])}{delta}）· 区间位置 {rng:.0f}%</span>"
+        f"<span>高 {fmt_px(pos['最高价'])}</span></div>"
         f"<div style='position:relative;height:8px;border-radius:4px;margin-top:4px;"
         f"background:linear-gradient(90deg,rgba(37,99,235,.30),rgba(245,158,11,.30),rgba(220,38,38,.34))'>"
         f"<div style='position:absolute;left:50%;top:0;width:1px;height:8px;background:var(--tb-border)'></div>"
@@ -1605,7 +1620,7 @@ with tab_leap:
     l1, l2, l3, l4, l5 = st.columns([2, 1.4, 1.4, 1.3, 0.9])
     wl_groups_us_l = [g for g in S.watchlist.groups if S.watchlist.enabled.get(g, True) and any(is_us_listed(x) for x in S.watchlist.groups[g])]
     default_lg = [g for g in wl_groups_us_l if g.lower() in S.view_groups] or wl_groups_us_l
-    pick_lg = l1.multiselect("板块", wl_groups_us_l, default=default_lg, key="leap_groups")
+    pick_lg = l1.multiselect("板块", wl_groups_us_l, default=default_lg, key="leap_groups", help="默认勾选由 .env 的 VIEW_GROUPS 决定")
     months_pick = l2.multiselect("到期月数", [4, 6, 8, 10, 12, 18, 24], default=[4, 6, 8, 10], key="leap_months", help="取最接近该月数的到期日，容差 45 天；4 个月严格说不算 LEAP，放这里方便对比时间价值")
     target_delta = l3.select_slider("目标 Delta", options=[0.5, 0.6, 0.7, 0.8, 0.9], value=0.7, key="leap_delta",
                                     help="按 Black-Scholes delta 最接近目标值选行权价；0.7~0.8 是常见的“代替正股”深度实值区")
@@ -2585,13 +2600,13 @@ def build_compare_fig(syms: tuple[str, ...], interval: str, days: int, height: i
 
 with tab_data:
     c1, c2, c3 = st.columns([3, 1, 1.8])
-    default_syms = [x for x in st.session_state.get("data_symbols", S.symbols[:1]) if x in S.symbols] or S.symbols[:1]
+    default_syms = [x for x in st.session_state.get("data_symbols", view_default_symbols()) if x in S.symbols] or S.symbols[:1]
     # “加入该板块”按钮在 multiselect 之后，Streamlit 不允许那时改它的 session_state，所以按钮只记一个待办，下一轮在这里合并
     add_req = st.session_state.pop("data_add_pending", None)
     if add_req:
         default_syms = list(dict.fromkeys(default_syms + [x for x in S.watchlist.groups.get(add_req, []) if x in S.symbols]))
         st.session_state["data_symbols"] = default_syms
-    syms_d = c1.multiselect("标的（可多选，下面每只一张图）", S.symbols, default=default_syms, key="data_symbols",
+    syms_d = c1.multiselect("标的（可多选，下面每只一张图）", S.symbols, default=default_syms, key="data_symbols", help="默认选中 .env 的 VIEW_GROUPS 里那些板块的标的",
                             format_func=lambda x: f"{x}{(' ' + display_name(x)) if display_name(x) else ''} · {'/'.join(S.watchlist.group_of(x))}")
     d_interval = c2.radio("周期", ["1d", "1h"], index=0 if S.interval == "1d" else 1, horizontal=True, key="data_interval")
     days_d = c3.slider("显示天数", 5, MAX_DAYS[d_interval], 365 if d_interval == "1d" else 60, key=f"data_days_{d_interval}")
