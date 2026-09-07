@@ -32,7 +32,7 @@ from tradebot.econ_calendar import market_session_open, sync_official_events
 from tradebot.macro import EVENT_COLUMNS, compute_snapshot, load_manual_events, macro_closes, market_history, save_manual_events, upcoming_earnings, upcoming_events
 from tradebot.news import fetch_info, fetch_news, format_info
 from tradebot.options import build_odte_table, fetch_chain_summary, macro_in_window
-from tradebot.bottom import BottomParams, analyze_bottom, build_bottom_table
+from tradebot.bottom import BottomParams, analyze_bottom, build_bottom_table, low_support_lines
 from tradebot.leaps import bs_price_path, build_leap_table, fetch_leap_candidates, fetch_option_history, implied_vol_series, iv_stats, payoff_curve
 from tradebot.iv import hv30, iv30_snapshot, iv_rank_percentile, load_history as load_iv_history
 from tradebot.rotation import BENCHMARKS, KIND, NAME, basket_index, group_breadth, monthly_returns, relative_strength_table, rotation_closes, rrg_tail
@@ -544,7 +544,7 @@ SYM_COLORS = ["#2563eb", "#dc2626", "#16a34a", "#f59e0b", "#7c3aed", "#0891b2", 
 
 
 def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 560,
-                    show_raw: bool = True, show_trades: bool = True, show_holding: bool = True):
+                    show_raw: bool = True, show_trades: bool = True, show_holding: bool = True, low_months: int = 0):
     """K 线 + SMA50/200 + 成交量；overlays 是策略名列表（或单个名 / "无"），每个策略一种颜色：
     △ 空心 = 那天满足入场条件；▲ 实心 = 策略回放中入场；▼ = 回放中退出；底色 = 回放中的模拟持仓期。"""
     if isinstance(overlays, str):
@@ -595,6 +595,19 @@ def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 
                                                  hovertemplate=f"%{{x|%m-%d}} {lab}：回放退出<extra></extra>"), 1, 1)
         notes.append("叠加 " + "、".join(STRAT_LABEL[o] for o in overlays) + "：△ 空心 = 那天收盘满足入场条件（信号，相对强度只标新进）；▲ 实心 = 策略回放中真的进了（有空槽位才会进）；"
                      "▼ = 回放中退出；底色 = 回放中的模拟持仓期；每个策略一种颜色。成交按下一根开盘。这是策略回放，不是你的账户。")
+    if low_months:
+        px_now = float(df["close"].iloc[-1])
+        for ln, color, dash, pos in zip(low_support_lines(full, months=low_months),
+                                        ("#b91c1c", "#b45309"), ("dash", "dot"), ("bottom left", "bottom right")):
+            fig.add_hline(y=ln["价格"], line=dict(color=color, width=1.2, dash=dash), row=1, col=1,
+                          annotation_text=f"{ln['标签']} {ln['价格']:.2f}（{ln['日期']:%m-%d}）", annotation_position=pos,
+                          annotation_font=dict(size=10, color=color))
+            fig.add_trace(go.Scatter(x=[ln["日期"]], y=[ln["价格"]], mode="markers", name=f"{ln['标签']} {ln['价格']:.2f}",
+                                     marker=dict(symbol="diamond", size=9, color=color, line=dict(color="white", width=1)),
+                                     hovertemplate=f"{ln['标签']} {ln['价格']:.2f}<br>%{{x|%Y-%m-%d}}<br>现价距此 {px_now / ln['价格'] - 1:+.1%}<extra></extra>"), 1, 1)
+        lows_txt = "、".join(f"{l['标签']} {l['价格']:.2f}（{l['日期']:%Y-%m-%d}，现价 {px_now / l['价格'] - 1:+.1%}）" for l in low_support_lines(full, months=low_months))
+        if lows_txt:
+            notes.append(f"低点线：{lows_txt}。第二低 = 把最低那根 bar 前后各 10 根排除后剩下的最低价，也就是另一段独立探底的低点。")
     fig.add_trace(go.Bar(x=df.index, y=df["volume"], name="成交量", marker_color="#9ca3af"), 2, 1)
     fig.update_layout(template=TEMPLATE, height=height, margin=dict(l=40, r=20, t=10, b=30), xaxis_rangeslider_visible=False,
                       legend=dict(orientation="h", y=1.06, font=dict(size=10)))
@@ -602,19 +615,21 @@ def build_price_fig(sym: str, interval: str, days: int, overlays, height: int = 
     if interval == "1h":
         breaks.append(dict(bounds=[16, 9.5], pattern="hour"))
     fig.update_xaxes(rangebreaks=breaks)
-    return fig, df, ("  · " + notes[0]) if notes else ""
+    return fig, df, ("  · " + "  · ".join(notes)) if notes else ""
 
 
 def overlay_controls(prefix: str, compact: bool = False):
     """叠加哪些策略 + 显示什么。选择记在会话里，切换标的时保持。"""
     default = [S.strategy] if S.strategy in SWING_NAMES else []
-    c1, c2, c3, c4 = st.columns([3, 1, 1, 1]) if not compact else st.columns([3, 1, 1, 1])
+    c1, c2, c3, c4, c5 = st.columns([2.6, 1, 1, 1, 1.2])
     ovs = c1.multiselect("叠加策略信号", SWING_NAMES, default=default, key=f"{prefix}_overlays",
                          format_func=lambda n: STRAT_LABEL[n] + ("（实盘）" if n == S.strategy else ""))
     show_raw = c2.checkbox("△ 满足条件", value=True, key=f"{prefix}_raw", help="那天收盘满足入场条件的 bar（空心三角）")
     show_trades = c3.checkbox("▲▼ 回放进出", value=True, key=f"{prefix}_trades", help="策略回放里真实发生的入场 / 退出（实心三角）")
     show_holding = c4.checkbox("▮ 持仓底色", value=True, key=f"{prefix}_hold", help="回放中的模拟持仓期")
-    return ovs, show_raw, show_trades, show_holding
+    low_on = c5.checkbox("6个月低点线", value=False, key=f"{prefix}_lowlines",
+                         help="两条水平线：最近 6 个月的最低价，以及跳开最低那一段（前后各 10 根 bar）之后剩下的最低价，也就是另一段独立探底的低点")
+    return ovs, show_raw, show_trades, show_holding, (6 if low_on else 0)
 
 
 IMPORTANCE_COLOR = {"高": "#b91c1c", "中": "#b45309", "低": "#6b7280"}
@@ -746,11 +761,11 @@ def show_detail(sym: str, row: dict | None) -> None:
             with st.expander("公司简介"):
                 st.write(info["longBusinessSummary"])
     with t3:
-        ovs, show_raw, show_trades, show_holding = overlay_controls("detail")
+        ovs, show_raw, show_trades, show_holding, low_m = overlay_controls("detail")
         days_ov = st.select_slider("显示区间", options=[90, 180, 365, 730], value=180 if S.interval == "1d" else 90, key="detail_days",
                                    format_func=lambda d: f"{d} 天")
         try:
-            fig, _, note = build_price_fig(sym, S.interval, days_ov, ovs, height=430, show_raw=show_raw, show_trades=show_trades, show_holding=show_holding)
+            fig, _, note = build_price_fig(sym, S.interval, days_ov, ovs, height=430, show_raw=show_raw, show_trades=show_trades, show_holding=show_holding, low_months=low_m)
             if note:
                 st.caption(note.strip(" ·"))
             st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG)
@@ -2555,7 +2570,7 @@ with tab_data:
                            help="把所有选中的标的放在一张图里，共同起点归一到 100，比的是相对涨跌，不受股价高低影响")
     log_cmp = g5.checkbox("对数刻度", value=False, key="data_compare_log",
                           help="其中一只涨了好几倍时，线性轴会把其他线压平；对数轴上相同的涨幅比例是相同的斜率")
-    ovs_d, raw_d, trades_d, hold_d = overlay_controls("chart")
+    ovs_d, raw_d, trades_d, hold_d, low_d = overlay_controls("chart")
     if not syms_d:
         st.info("先选至少一个标的。")
     else:
@@ -2591,7 +2606,7 @@ with tab_data:
                     if t2.button("详情", key=f"chart_detail_{sym}"):
                         request_detail(sym)
                     try:
-                        fig, df, note = build_price_fig(sym, d_interval, days_d, ovs_d, height=h_each, show_raw=raw_d, show_trades=trades_d, show_holding=hold_d)
+                        fig, df, note = build_price_fig(sym, d_interval, days_d, ovs_d, height=h_each, show_raw=raw_d, show_trades=trades_d, show_holding=hold_d, low_months=low_d)
                         st.plotly_chart(fig, width="stretch", config=PLOTLY_CONFIG, key=f"chart_fig_{sym}")
                         st.caption(f"{len(df)} 根 {d_interval} bar · {df.index[0]:%Y-%m-%d} 至 {df.index[-1]:%Y-%m-%d %H:%M} · 时区 {NY}" + (note if per_row == 1 else ""))
                     except Exception as e:
@@ -2669,6 +2684,7 @@ with tab_help:
         "- **底部确认**：六条规则各一分：前期跌幅 ≥ 阈值、低点抬高、突破颈线、收复 SMA20 且拐头、突破日放量、RSI 底背离或 > 50；阶段 = 确认 / 确认后回踩 / 初步企稳 / 未见底 / 跌破低点 / 无明显下跌。\n"
         "- **板块轮动**：RS 比率 = 100 × (价格/基准) / 其 63 日均值；RS 动量 = 100 × RS 比率 / 10 日前值；象限：领先(>100,>100)、走弱(>100,<100)、落后(<100,<100)、改善(<100,>100)。\n"
         "- **大盘宏观**：指数用指数本身（^GSPC、^NDX、^DJI、^RUT），不是 ETF；事件日历来自美联储 / BEA / 普查局官网与 BLS 日程，ISM 等按惯例推算。\n"
-        "- **行情**：可以多选标的，下面每只一张 K 线图（每行 1 或 2 张）；归一化对比图把所有选中标的在共同起点归一到 100，共同起点取最晚有数据的那只，所以选了新上市的股票会截短对比区间；区间% 不含股息。"
+        "- **行情**：可以多选标的，下面每只一张 K 线图（每行 1 或 2 张）；归一化对比图把所有选中标的在共同起点归一到 100，共同起点取最晚有数据的那只，所以选了新上市的股票会截短对比区间；区间% 不含股息。\n"
+        "- **6个月低点线**（行情页和详情弹窗可勾）：红色虚线 = 最近 6 个月最低的那根 bar 的最低价；橙色点线 = 第二低，把最低那根 bar 前后各 10 根 bar 排除后剩下的最低价，也就是另一段独立探底的低点。菱形标在低点当天，悬停显示现价距该低点多少。两条线都用真实最低价，不做平滑，也不代表支撑一定有效。"
     )
     st.caption("以上全部是规则与历史统计的说明，不构成任何投资建议。")

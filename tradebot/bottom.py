@@ -169,3 +169,27 @@ def build_bottom_table(symbols: list[str], data: dict[str, pd.DataFrame], p: Bot
         out["_o"] = out["阶段"].map(order).fillna(9)
         out = out.sort_values(["_o", "得分"], ascending=[True, False]).drop(columns="_o").reset_index(drop=True)
     return out
+
+
+def low_support_lines(df: pd.DataFrame, months: int = 6, gap_bars: int = 10) -> list[dict]:
+    """最近 months 个月里的最低价，和另一段独立低点里的最低价（"第二低"）。
+
+    第二低的定义：把最低那根 bar 前后各 gap_bars 根排除掉（同一次探底不算两次），剩下的 bar 里最低的那根。
+    返回 [{标签, 价格, 日期, 距今bar}, ...]，最低在前；数据不够时返回空列表或只返回一条。
+    """
+    if df is None or df.empty or "low" not in df:
+        return []
+    w = df[df.index >= df.index[-1] - pd.DateOffset(months=months)]
+    lows = w["low"].dropna()
+    if len(lows) < 2:
+        return []
+    vals = lows.values
+    i1 = int(np.argmin(vals))
+    out = [{"标签": f"{months}个月最低", "价格": float(vals[i1]), "日期": lows.index[i1], "距今bar": len(lows) - 1 - i1}]
+    keep = np.ones(len(vals), dtype=bool)
+    keep[max(0, i1 - gap_bars): i1 + gap_bars + 1] = False
+    if keep.any():
+        idx = np.flatnonzero(keep)
+        i2 = int(idx[np.argmin(vals[idx])])
+        out.append({"标签": "第二低", "价格": float(vals[i2]), "日期": lows.index[i2], "距今bar": len(lows) - 1 - i2})
+    return out

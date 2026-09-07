@@ -48,3 +48,31 @@ def test_table_orders_confirmed_first():
     bad = _df(np.linspace(150, 100, 70))
     tbl = build_bottom_table(["GOOD", "BAD"], {"GOOD": good, "BAD": bad}, BottomParams(swing_k=3), groups={"g": ["GOOD", "BAD"]})
     assert list(tbl["标的"]) == ["GOOD", "BAD"] and tbl.iloc[0]["板块"] == "g"
+
+
+def test_low_support_lines_picks_two_separate_troughs():
+    import numpy as np
+    from tradebot.bottom import low_support_lines
+    # 两段独立探底：第 30 根 80（最低），第 90 根 85（第二低），中间反弹到 110
+    c = np.r_[np.linspace(100, 80, 31), np.linspace(80, 110, 30), np.linspace(110, 85, 30), np.linspace(85, 105, 29)]
+    df = _df(c)
+    lines = low_support_lines(df, months=12, gap_bars=10)
+    assert [l["标签"] for l in lines] == ["12个月最低", "第二低"]
+    assert lines[0]["价格"] < lines[1]["价格"]
+    assert abs((lines[0]["日期"] - df.index[30]).days) <= 3
+    assert abs((lines[1]["日期"] - df.index[90]).days) <= 3
+
+
+def test_low_support_lines_second_low_is_not_the_neighbouring_bar():
+    import numpy as np
+    from tradebot.bottom import low_support_lines
+    df = _df(np.r_[np.linspace(120, 60, 60), np.linspace(60, 130, 60)])   # 单个 V 底
+    lines = low_support_lines(df, months=12, gap_bars=10)
+    assert len(lines) == 2
+    assert abs(lines[0]["距今bar"] - lines[1]["距今bar"]) > 10   # 第二低必须跳开最低那一段
+
+
+def test_low_support_lines_handles_short_data():
+    import numpy as np
+    from tradebot.bottom import low_support_lines
+    assert low_support_lines(_df(np.array([100.0])), months=6) == []
